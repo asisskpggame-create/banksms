@@ -127,7 +127,6 @@ fun AsisAppScreen(
         }
     }
 
-    // Permission states
     var hasSmsPermissions by remember {
         mutableStateOf(checkSmsPermissionsGranted(context))
     }
@@ -153,7 +152,6 @@ fun AsisAppScreen(
         permissionsLauncher.launch(perms)
     }
 
-    // BackHandler for secondary tabs to return to Home screen
     BackHandler(enabled = currentTab != AsisTab.HOME) {
         currentTab = AsisTab.HOME
     }
@@ -258,6 +256,7 @@ fun AsisAppScreen(
 
                 AsisTab.LOGS -> LogsScreen(
                     logs = allLogs,
+                    onApproveManually = asisViewModel::approveRecordManually,
                     onRetrySingle = asisViewModel::retrySingleLog,
                     onClearAllLogs = asisViewModel::clearAllLogs
                 )
@@ -273,7 +272,9 @@ fun AsisAppScreen(
                     settings = settings,
                     testConnectionState = testConnectionState,
                     onSaveSettings = asisViewModel::saveSettings,
+                    onToggleAutoApproveInApp = asisViewModel::setAutoApproveInApp,
                     onTestConnection = asisViewModel::runTestConnection,
+                    onTestPendingEndpoint = asisViewModel::runTestPendingEndpoint,
                     onResetTestState = asisViewModel::resetTestConnectionState
                 )
             }

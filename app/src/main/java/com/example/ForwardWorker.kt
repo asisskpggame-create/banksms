@@ -7,25 +7,34 @@ import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.example.data.AppDatabase
-import com.example.data.LogEntry
-import com.example.data.LogStatus
+import com.example.data.Deposit
+import com.example.data.Item
+import com.example.data.Matcher
 import com.example.data.SettingsRepo
+import com.example.data.SmsRecord
+import com.example.data.SmsStatus
+import com.example.network.ApproveResult
 import com.example.network.GatewayApiClient
-import com.example.network.GatewayResult
+import com.example.network.PendingFetchResult
 import com.example.util.NotificationHelper
 import java.util.concurrent.TimeUnit
 
 /**
- * WorkManager worker that forwards queued bank SMS messages to the ASiS server
- * following `spec/API_CONTRACT.md` retry/backoff rules:
- * - 2xx -> SENT (removed from active retry queue)
- * - 401 -> FAILED (Invalid token, no automatic retry, user notified)
- * - 404 / 400 -> FAILED (Permanent error, logged, no automatic retry)
- * - 429 / 5xx / Network error -> RETRY with exponential backoff
+ * Implements `MatcherWorker` from Section 1, 4, 5, 6, 7, 8 of `APP_SIDE_APPROVAL_SPEC.md`:
+ * 1. Cleans up records older than 30 days (`KEEP_DAYS = 30`).
+ * 2. Fetches waiting orders/top-ups via `GET /sms-pending` and calculates server clock offset.
+ * 3. Expires `NEW` deposits older than `match_window_hours`.
+ * 4. Runs `Matcher.plan(deposits, items)` locally on device.
+ * 5. Handles `AMBIGUOUS` (multiple orders with same amount -> no auto-approve + notification).
+ * 6. For matched pairs:
+ *    - If `autoApproveInApp` is ON and within Toman ceiling (or user explicitly tapped manual approve):
+ *      claims record (`CLAIMED`) and calls `POST /sms-approve` with HMAC-SHA256 signature.
+ *    - Otherwise marks `MANUAL` with matched order ID and notifies user for one-tap approval in app.
  */
 class ForwardWorker(
     appContext: Context,
@@ -38,130 +47,343 @@ class ForwardWorker(
         val settingsRepo = SettingsRepo.getInstance(applicationContext)
         val settings = settingsRepo.readSettings()
 
-        val targetLogId = inputData.getLong(KEY_LOG_ID, -1L)
-        val logsToProcess: List<LogEntry> = if (targetLogId > 0L) {
-            listOfNotNull(dao.getLogById(targetLogId)).filter {
-                it.statusEnum == LogStatus.QUEUED || it.statusEnum == LogStatus.RETRY
-            }
-        } else {
-            dao.getPendingLogs()
+        // 1. Delete old SMS records (> 30 days)
+        val thirtyDaysAgoMs = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(KEEP_DAYS)
+        dao.deleteOlderThan(thirtyDaysAgoMs)
+
+        // Check if this is an explicit manual approval of a single `MANUAL` or `RETRY` record
+        val manualApproveId = inputData.getLong(KEY_MANUAL_APPROVE_ID, -1L)
+        if (manualApproveId > 0L) {
+            return executeManualApprove(manualApproveId, dao, settingsRepo)
         }
 
-        if (logsToProcess.isEmpty()) {
+        val activeDeposits = dao.getActiveDepositsForMatching()
+        if (activeDeposits.isEmpty()) {
             return Result.success()
         }
 
-        // If user hasn't configured URL/token yet, keep items in queue to retry when configured
         if (!settings.isConfigured) {
-            val now = System.currentTimeMillis()
-            for (entry in logsToProcess) {
-                dao.updateLog(
-                    entry.copy(
-                        status = LogStatus.RETRY.name,
-                        errorMessage = "در انتظار تکمیل آدرس سرور و توکن در صفحهٔ تنظیمات",
-                        updatedAt = now
+            for (rec in activeDeposits) {
+                dao.update(
+                    rec.copy(
+                        status = SmsStatus.RETRY.name,
+                        lastError = "در انتظار ثبت آدرس سرور و توکن در تنظیمات"
                     )
                 )
             }
             return Result.retry()
         }
 
-        var shouldRetryQueue = false
+        // 2. Fetch waiting items from `GET /sms-pending`
+        val pendingResult = GatewayApiClient.fetchPendingItems(
+            endpointUrl = settings.endpointUrl,
+            token = settings.gatewayToken
+        )
 
-        for (entry in logsToProcess) {
-            val result = GatewayApiClient.sendSms(
-                endpointUrl = settings.endpointUrl,
-                token = settings.gatewayToken,
-                smsText = entry.body,
-                bankCode = entry.bankCode
-            )
-            val now = System.currentTimeMillis()
-
-            when (result) {
-                is GatewayResult.Success -> {
-                    dao.updateLog(
-                        entry.copy(
-                            status = LogStatus.SENT.name,
-                            httpCode = result.httpCode,
-                            serverStatus = result.status,
-                            approvedCount = result.approved,
-                            errorMessage = null,
-                            updatedAt = now
+        val pendingSuccess = when (pendingResult) {
+            is PendingFetchResult.Success -> pendingResult
+            is PendingFetchResult.Unauthorized401 -> {
+                settingsRepo.recordTokenError(pendingResult.message)
+                NotificationHelper.notifyTokenError(applicationContext, pendingResult.message)
+                for (rec in activeDeposits) {
+                    dao.update(
+                        rec.copy(
+                            status = SmsStatus.FAILED.name,
+                            httpCode = 401,
+                            lastError = pendingResult.message
                         )
                     )
-                    settingsRepo.recordTokenError(null)
                 }
-
-                is GatewayResult.PermanentFailure -> {
-                    dao.updateLog(
-                        entry.copy(
-                            status = LogStatus.FAILED.name,
-                            httpCode = result.httpCode,
-                            errorMessage = result.message,
-                            updatedAt = now
+                return Result.failure()
+            }
+            is PendingFetchResult.PermanentError -> {
+                for (rec in activeDeposits) {
+                    dao.update(
+                        rec.copy(
+                            status = SmsStatus.RETRY.name,
+                            httpCode = pendingResult.httpCode,
+                            lastError = pendingResult.message
                         )
                     )
-                    if (result.isTokenError) {
-                        settingsRepo.recordTokenError(result.message)
-                        NotificationHelper.notifyTokenError(applicationContext, result.message)
-                        // Stop processing further items with a bad 401 token to avoid triggering 429 rate-limiter
-                        return Result.failure()
-                    }
                 }
-
-                is GatewayResult.RetryableFailure -> {
-                    dao.updateLog(
-                        entry.copy(
-                            status = LogStatus.RETRY.name,
-                            httpCode = result.httpCode,
-                            errorMessage = result.message,
-                            retryCount = entry.retryCount + 1,
-                            updatedAt = now
+                return Result.failure()
+            }
+            is PendingFetchResult.RetryableError -> {
+                for (rec in activeDeposits) {
+                    dao.update(
+                        rec.copy(
+                            status = SmsStatus.RETRY.name,
+                            httpCode = pendingResult.httpCode,
+                            lastError = pendingResult.message,
+                            attempts = rec.attempts + 1
                         )
                     )
-                    shouldRetryQueue = true
-                    if (result.httpCode == 429) {
-                        // Respect server rate limit immediately and wait for backoff
-                        break
-                    }
                 }
+                return Result.retry()
             }
         }
 
-        return if (shouldRetryQueue) Result.retry() else Result.success()
+        // Update saved server metadata & clock offset
+        val clockOffsetMs = pendingSuccess.clockOffsetMs
+        settingsRepo.updateServerSyncMeta(
+            clockOffsetMs = clockOffsetMs,
+            matchWindowHours = pendingSuccess.matchWindowHours,
+            autoMaxToman = pendingSuccess.autoMaxToman
+        )
+        settingsRepo.recordTokenError(null)
+
+        // 3. Expire `NEW` deposits older than `match_window_hours` (using server clock)
+        val windowMs = TimeUnit.HOURS.toMillis(pendingSuccess.matchWindowHours.toLong().coerceAtLeast(1L))
+        val phoneCutoffMs = (pendingSuccess.serverNowMs - windowMs) - clockOffsetMs
+        dao.expireOldNewDeposits(cutoffMs = phoneCutoffMs, nowMs = System.currentTimeMillis())
+
+        // Re-read active deposits after expiration
+        val freshDeposits = dao.getActiveDepositsForMatching()
+        if (freshDeposits.isEmpty() || pendingSuccess.items.isEmpty()) {
+            return Result.success()
+        }
+
+        val byId = freshDeposits.associateBy { it.id }
+        val matcherDeposits = freshDeposits.mapNotNull { rec ->
+            val amt = rec.amountMinor ?: return@mapNotNull null
+            Deposit(
+                id = rec.id,
+                amountMinor = amt,
+                at = rec.receivedMs + clockOffsetMs // depositAtServerTime = receivedAtMs + offset
+            )
+        }
+
+        // 4. Plan matches locally via `Matcher.plan`
+        val (pairs, ambiguousList) = Matcher.plan(matcherDeposits, pendingSuccess.items)
+
+        // 5. Handle ambiguous deposits (`I > D`)
+        val nowMs = System.currentTimeMillis()
+        for (amb in ambiguousList) {
+            val rec = byId[amb.id] ?: continue
+            dao.update(
+                rec.copy(
+                    status = SmsStatus.AMBIGUOUS.name,
+                    reason = "same_amount",
+                    decidedMs = nowMs,
+                    lastError = "چند سفارش منتظر با همین مبلغ وجود دارد؛ بررسی دستی لازم است."
+                )
+            )
+            NotificationHelper.notifyAmbiguousDeposit(
+                context = applicationContext,
+                depositId = rec.id,
+                amountMinor = amb.amountMinor
+            )
+        }
+
+        // 6. Process matched pairs `(dep, item)`
+        val updatedSettings = settingsRepo.readSettings()
+        val maxToman = updatedSettings.effectiveMaxToman
+        val limitMinor = if (maxToman > 0L) maxToman * 10L else 0L
+        var shouldRetryAny = false
+
+        for ((dep, item) in pairs) {
+            val rec = byId[dep.id] ?: continue
+            val withinLimit = limitMinor == 0L || item.dueMinor <= limitMinor
+            val autoApprove = updatedSettings.autoApproveInApp && withinLimit
+
+            if (!autoApprove) {
+                val whyNote = if (!updatedSettings.autoApproveInApp) {
+                    "تأیید خودکار خاموش است"
+                } else {
+                    "مبلغ بالاتر از سقف تأیید خودکار است"
+                }
+                val updatedRec = rec.copy(
+                    status = SmsStatus.MANUAL.name,
+                    matchedKind = item.kind,
+                    matchedId = item.publicId,
+                    decidedMs = nowMs,
+                    lastError = "تطبیق با ${if (item.kind == "topup") "شارژ" else "سفارش"} ${item.publicId} ($whyNote)"
+                )
+                dao.update(updatedRec)
+                NotificationHelper.notifyManualApprovalNeeded(
+                    context = applicationContext,
+                    depositId = rec.id,
+                    amountMinor = dep.amountMinor,
+                    matchedLabel = updatedRec.matchedLabelFa() ?: item.publicId,
+                    whyNote = whyNote
+                )
+                continue
+            }
+
+            val approveOutcome = claimAndSendApproval(
+                rec = rec,
+                itemKind = item.kind,
+                itemPublicId = item.publicId,
+                clockOffsetMs = clockOffsetMs,
+                dao = dao,
+                settingsRepo = settingsRepo
+            )
+            if (approveOutcome == ApprovalStepOutcome.RETRY) {
+                shouldRetryAny = true
+            } else if (approveOutcome == ApprovalStepOutcome.ABORT_401) {
+                return Result.failure()
+            }
+        }
+
+        return if (shouldRetryAny) Result.retry() else Result.success()
+    }
+
+    private suspend fun executeManualApprove(
+        recordId: Long,
+        dao: com.example.data.LogDao,
+        settingsRepo: SettingsRepo
+    ): Result {
+        val rec = dao.getById(recordId) ?: return Result.success()
+        val settings = settingsRepo.readSettings()
+        if (!settings.isConfigured) {
+            dao.update(
+                rec.copy(
+                    lastError = "ابتدا آدرس سرور و توکن را در صفحهٔ تنظیمات ذخیره کنید."
+                )
+            )
+            return Result.failure()
+        }
+
+        val kind = rec.matchedKind ?: "order"
+        val publicId = rec.matchedId
+        if (publicId.isNullOrBlank()) {
+            // If no matchedId yet, run the full matcher sweep first
+            return Result.success()
+        }
+
+        val outcome = claimAndSendApproval(
+            rec = rec,
+            itemKind = kind,
+            itemPublicId = publicId,
+            clockOffsetMs = settings.lastClockOffsetMs,
+            dao = dao,
+            settingsRepo = settingsRepo
+        )
+        return when (outcome) {
+            ApprovalStepOutcome.DONE -> Result.success()
+            ApprovalStepOutcome.RETRY -> Result.retry()
+            ApprovalStepOutcome.ABORT_401 -> Result.failure()
+        }
+    }
+
+    private enum class ApprovalStepOutcome { DONE, RETRY, ABORT_401 }
+
+    private suspend fun claimAndSendApproval(
+        rec: SmsRecord,
+        itemKind: String,
+        itemPublicId: String,
+        clockOffsetMs: Long,
+        dao: com.example.data.LogDao,
+        settingsRepo: SettingsRepo
+    ): ApprovalStepOutcome {
+        val amountMinor = rec.amountMinor ?: return ApprovalStepOutcome.DONE
+        val settings = settingsRepo.readSettings()
+
+        // Claim-first safety (Section 6): transition to CLAIMED before network request
+        val claimedRows = dao.claimForApproval(rec.id, itemKind, itemPublicId)
+        if (claimedRows == 0 && rec.statusEnum != SmsStatus.CLAIMED) {
+            return ApprovalStepOutcome.DONE
+        }
+
+        val currentBeforeCall = dao.getById(rec.id) ?: rec
+        val serverAlignedReceivedMs = currentBeforeCall.receivedMs + clockOffsetMs
+        val serverAlignedNowMs = System.currentTimeMillis() + clockOffsetMs
+
+        val result = GatewayApiClient.sendApproveRequest(
+            endpointUrl = settings.endpointUrl,
+            token = settings.gatewayToken,
+            kind = itemKind,
+            publicId = itemPublicId,
+            fingerprint = currentBeforeCall.fingerprint,
+            amountMinor = amountMinor,
+            bank = currentBeforeCall.bank,
+            rawSms = currentBeforeCall.body,
+            smsReceivedMs = serverAlignedReceivedMs,
+            tsMs = serverAlignedNowMs
+        )
+
+        val nowMs = System.currentTimeMillis()
+        return when (result) {
+            is ApproveResult.Approved -> {
+                dao.update(
+                    currentBeforeCall.copy(
+                        status = SmsStatus.MATCHED.name,
+                        matchedKind = itemKind,
+                        matchedId = itemPublicId,
+                        decidedMs = nowMs,
+                        httpCode = result.httpCode,
+                        lastError = null
+                    )
+                )
+                settingsRepo.recordTokenError(null)
+                ApprovalStepOutcome.DONE
+            }
+
+            is ApproveResult.Conflict409 -> {
+                // Server safety lock rejected approval (409) -> mark MANUAL, notify user, do NOT retry
+                val updated = currentBeforeCall.copy(
+                    status = SmsStatus.MANUAL.name,
+                    matchedKind = itemKind,
+                    matchedId = itemPublicId,
+                    decidedMs = nowMs,
+                    httpCode = 409,
+                    lastError = result.reason
+                )
+                dao.update(updated)
+                NotificationHelper.notifyManualApprovalNeeded(
+                    context = applicationContext,
+                    depositId = rec.id,
+                    amountMinor = amountMinor,
+                    matchedLabel = updated.matchedLabelFa() ?: itemPublicId,
+                    whyNote = "رد توسط قفل ایمنی سرور ۴۰۹: ${result.reason}"
+                )
+                ApprovalStepOutcome.DONE
+            }
+
+            is ApproveResult.Unauthorized401 -> {
+                dao.update(
+                    currentBeforeCall.copy(
+                        status = SmsStatus.FAILED.name,
+                        httpCode = 401,
+                        lastError = result.message,
+                        decidedMs = nowMs
+                    )
+                )
+                settingsRepo.recordTokenError(result.message)
+                NotificationHelper.notifyTokenError(applicationContext, result.message)
+                ApprovalStepOutcome.ABORT_401
+            }
+
+            is ApproveResult.RetryableError -> {
+                // Revert CLAIMED back to RETRY on temporary error (Section 6)
+                dao.update(
+                    currentBeforeCall.copy(
+                        status = SmsStatus.RETRY.name,
+                        matchedKind = itemKind,
+                        matchedId = itemPublicId,
+                        httpCode = result.httpCode,
+                        lastError = result.message
+                    )
+                )
+                ApprovalStepOutcome.RETRY
+            }
+        }
     }
 
     companion object {
-        const val KEY_LOG_ID = "log_id"
-        private const val UNIQUE_SWEEP_WORK_NAME = "asis_forward_pending_sweep"
+        const val KEY_MANUAL_APPROVE_ID = "manual_approve_id"
+        private const val UNIQUE_SWEEP_WORK_NAME = "asis_matcher_pending_sweep"
+        private const val KEEP_DAYS = 30L
 
         private fun networkConstraints(): Constraints =
             Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build()
 
-        fun enqueueForLog(context: Context, logId: Long) {
+        fun enqueueMatcherSweep(context: Context) {
             val request = OneTimeWorkRequestBuilder<ForwardWorker>()
                 .setConstraints(networkConstraints())
-                .setInputData(workDataOf(KEY_LOG_ID to logId))
-                .setBackoffCriteria(
-                    BackoffPolicy.EXPONENTIAL,
-                    30L,
-                    TimeUnit.SECONDS
-                )
-                .addTag("sms_forward_$logId")
-                .build()
-
-            WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-                "asis_forward_log_$logId",
-                ExistingWorkPolicy.REPLACE,
-                request
-            )
-        }
-
-        fun enqueuePendingAll(context: Context) {
-            val request = OneTimeWorkRequestBuilder<ForwardWorker>()
-                .setConstraints(networkConstraints())
+                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
                 .setBackoffCriteria(
                     BackoffPolicy.EXPONENTIAL,
                     30L,
@@ -176,5 +398,27 @@ class ForwardWorker(
                 request
             )
         }
+
+        fun enqueueManualApprove(context: Context, recordId: Long) {
+            val request = OneTimeWorkRequestBuilder<ForwardWorker>()
+                .setConstraints(networkConstraints())
+                .setInputData(workDataOf(KEY_MANUAL_APPROVE_ID to recordId))
+                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                .setBackoffCriteria(
+                    BackoffPolicy.EXPONENTIAL,
+                    30L,
+                    TimeUnit.SECONDS
+                )
+                .addTag("asis_manual_approve_$recordId")
+                .build()
+
+            WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+                "asis_manual_approve_$recordId",
+                ExistingWorkPolicy.REPLACE,
+                request
+            )
+        }
+
+        fun enqueuePendingAll(context: Context) = enqueueMatcherSweep(context)
     }
 }

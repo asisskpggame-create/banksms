@@ -7,23 +7,34 @@ import com.example.ForwardWorker
 import com.example.InternetWatchService
 import com.example.data.AppDatabase
 import com.example.data.GatewaySettings
-import com.example.data.LogEntry
-import com.example.data.LogStatus
+import com.example.data.Item
 import com.example.data.SettingsRepo
 import com.example.data.SmsParser
+import com.example.data.SmsRecord
+import com.example.data.SmsStatus
 import com.example.network.GatewayApiClient
 import com.example.network.GatewayResult
+import com.example.network.PendingFetchResult
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 sealed class TestConnectionUiState {
     data object Idle : TestConnectionUiState()
     data object Loading : TestConnectionUiState()
-    data class Success(val httpCode: Int, val status: String) : TestConnectionUiState()
+    data class SuccessSmsIn(val httpCode: Int, val status: String) : TestConnectionUiState()
+    data class SuccessPending(
+        val itemsCount: Int,
+        val clockOffsetMs: Long,
+        val matchWindowHours: Int,
+        val autoMaxToman: Long,
+        val sampleItems: List<Item>
+    ) : TestConnectionUiState()
     data class Error(val httpCode: Int?, val message: String) : TestConnectionUiState()
 }
 
@@ -36,19 +47,19 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
     val settingsState: StateFlow<GatewaySettings> = settingsRepo.settingsFlow
     val isOnlineState: StateFlow<Boolean> = InternetWatchService.isOnlineFlow
 
-    val allLogs: StateFlow<List<LogEntry>> = logDao.observeAllLogs()
+    val allLogs: StateFlow<List<SmsRecord>> = logDao.observeAllLogs()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val queueCount: StateFlow<Int> = logDao.observeQueueCount()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    val sentCount: StateFlow<Int> = logDao.observeSentCount()
+    val sentCount: StateFlow<Int> = logDao.observeMatchedCount()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    val failedCount: StateFlow<Int> = logDao.observeFailedCount()
+    val failedCount: StateFlow<Int> = logDao.observeActionNeededCount()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    val lastSentLog: StateFlow<LogEntry?> = logDao.observeLastSentLog()
+    val lastSentLog: StateFlow<SmsRecord?> = logDao.observeLastMatchedLog()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     private val _testConnectionState = MutableStateFlow<TestConnectionUiState>(TestConnectionUiState.Idle)
@@ -59,6 +70,16 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         InternetWatchService.register(appContext)
+        // Periodic 30-second matcher loop per Section 1 of APP_SIDE_APPROVAL_SPEC.md
+        viewModelScope.launch {
+            while (isActive) {
+                delay(30_000L)
+                val current = settingsRepo.readSettings()
+                if (current.serviceEnabled && current.isConfigured) {
+                    ForwardWorker.enqueueMatcherSweep(appContext)
+                }
+            }
+        }
     }
 
     fun consumeSnackbar() {
@@ -68,23 +89,33 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
     fun setServiceEnabled(enabled: Boolean) {
         settingsRepo.setServiceEnabled(enabled)
         if (enabled) {
-            ForwardWorker.enqueuePendingAll(appContext)
-            _snackbarMessage.value = "سرویس فورواردر پیامک فعال شد."
+            ForwardWorker.enqueueMatcherSweep(appContext)
+            _snackbarMessage.value = "سرویس تطبیق و تأیید پیامک فعال شد."
         } else {
-            _snackbarMessage.value = "سرویس فورواردر پیامک موقتاً متوقف شد."
+            _snackbarMessage.value = "سرویس موقتاً متوقف شد."
         }
     }
 
-    fun saveSettings(endpointUrl: String, token: String) {
+    fun setAutoApproveInApp(enabled: Boolean) {
+        settingsRepo.setAutoApproveInApp(enabled)
+        if (enabled) {
+            ForwardWorker.enqueueMatcherSweep(appContext)
+            _snackbarMessage.value = "تأیید خودکار در اپ فعال شد."
+        } else {
+            _snackbarMessage.value = "تأیید خودکار خاموش شد (فقط تطبیق و اعلان برای تأیید دستی)."
+        }
+    }
+
+    fun saveSettings(endpointUrl: String, token: String, localMaxTomanStr: String) {
         val validationError = GatewayApiClient.validateInputConfig(endpointUrl, token)
         if (validationError != null) {
             _snackbarMessage.value = validationError
             return
         }
-        settingsRepo.saveEndpointAndToken(endpointUrl, token)
+        val maxToman = localMaxTomanStr.trim().replace(",", "").toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+        settingsRepo.saveEndpointAndToken(endpointUrl, token, maxToman)
         _snackbarMessage.value = "تنظیمات با رمزنگاری AES-256 ذخیره شد."
-        // Flush any pending messages now that settings are updated
-        ForwardWorker.enqueuePendingAll(appContext)
+        ForwardWorker.enqueueMatcherSweep(appContext)
     }
 
     fun runTestConnection(endpointUrl: String, token: String) {
@@ -93,46 +124,23 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
             _testConnectionState.value = TestConnectionUiState.Error(null, validationError)
             return
         }
-        // Save valid credentials first so user doesn't lose them
         settingsRepo.saveEndpointAndToken(endpointUrl, token)
         _testConnectionState.value = TestConnectionUiState.Loading
 
         viewModelScope.launch {
             when (val result = GatewayApiClient.testConnection(endpointUrl, token)) {
                 is GatewayResult.Success -> {
-                    _testConnectionState.value = TestConnectionUiState.Success(
+                    _testConnectionState.value = TestConnectionUiState.SuccessSmsIn(
                         httpCode = result.httpCode,
                         status = result.status
                     )
-                    // Also record in logs for transparency
-                    val now = System.currentTimeMillis()
-                    val parsed = SmsParser.parse(SmsParser.TEST_MARK, sender = "APP_TEST", explicitBankCode = "test")
-                    logDao.insertLog(
-                        LogEntry(
-                            sender = "تست اتصال",
-                            bankCode = "test",
-                            bankTitle = "تست اتصال درگاه",
-                            body = SmsParser.TEST_MARK,
-                            amountRial = null,
-                            parseReason = "test",
-                            fingerprint = parsed.fingerprint,
-                            status = LogStatus.SENT.name,
-                            httpCode = result.httpCode,
-                            serverStatus = result.status,
-                            approvedCount = result.approved,
-                            createdAt = now,
-                            updatedAt = now
-                        )
-                    )
                 }
-
                 is GatewayResult.PermanentFailure -> {
                     _testConnectionState.value = TestConnectionUiState.Error(
                         httpCode = result.httpCode,
                         message = result.message
                     )
                 }
-
                 is GatewayResult.RetryableFailure -> {
                     _testConnectionState.value = TestConnectionUiState.Error(
                         httpCode = result.httpCode,
@@ -143,57 +151,155 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Second test button per Section 7: tests `GET /sms-pending` and displays clock offset & waiting orders.
+     */
+    fun runTestPendingEndpoint(endpointUrl: String, token: String) {
+        val validationError = GatewayApiClient.validateInputConfig(endpointUrl, token)
+        if (validationError != null) {
+            _testConnectionState.value = TestConnectionUiState.Error(null, validationError)
+            return
+        }
+        settingsRepo.saveEndpointAndToken(endpointUrl, token)
+        _testConnectionState.value = TestConnectionUiState.Loading
+
+        viewModelScope.launch {
+            when (val res = GatewayApiClient.fetchPendingItems(endpointUrl, token)) {
+                is PendingFetchResult.Success -> {
+                    settingsRepo.updateServerSyncMeta(
+                        clockOffsetMs = res.clockOffsetMs,
+                        matchWindowHours = res.matchWindowHours,
+                        autoMaxToman = res.autoMaxToman
+                    )
+                    _testConnectionState.value = TestConnectionUiState.SuccessPending(
+                        itemsCount = res.items.size,
+                        clockOffsetMs = res.clockOffsetMs,
+                        matchWindowHours = res.matchWindowHours,
+                        autoMaxToman = res.autoMaxToman,
+                        sampleItems = res.items.take(5)
+                    )
+                }
+                is PendingFetchResult.Unauthorized401 -> {
+                    _testConnectionState.value = TestConnectionUiState.Error(401, res.message)
+                }
+                is PendingFetchResult.PermanentError -> {
+                    _testConnectionState.value = TestConnectionUiState.Error(res.httpCode, res.message)
+                }
+                is PendingFetchResult.RetryableError -> {
+                    _testConnectionState.value = TestConnectionUiState.Error(res.httpCode, res.message)
+                }
+            }
+        }
+    }
+
     fun resetTestConnectionState() {
         _testConnectionState.value = TestConnectionUiState.Idle
     }
 
     /**
-     * Allows user to simulate an incoming bank SMS directly from the app to verify
-     * parsing, queueing, and server delivery (`sms_deposits`) per the ROADMAP checklist.
+     * Simulates an incoming bank SMS through the exact Section 1 & 2 pipeline:
+     * preserves raw body, computes fingerprint, deduplicates, parses deposit amount,
+     * sets `NEW` or `IGNORED`, and triggers `MatcherWorker`.
      */
-    fun enqueueSimulatedBankSms(sender: String, body: String) {
-        val trimmed = body.trim().take(SmsParser.MAX_SMS_LENGTH)
-        if (trimmed.isEmpty()) {
+    fun enqueueSimulatedBankSms(sender: String, rawBody: String) {
+        if (rawBody.isBlank()) {
             _snackbarMessage.value = "متن پیامک تستی نمی‌تواند خالی باشد."
             return
         }
         viewModelScope.launch {
-            val parsed = SmsParser.parse(rawText = trimmed, sender = sender)
+            val bank = sender.ifBlank { "98200033" }.take(32)
             val now = System.currentTimeMillis()
-            val entry = LogEntry(
-                sender = sender.ifBlank { "98200033" },
-                bankCode = parsed.bankCode,
-                bankTitle = parsed.bankTitleFa,
-                body = trimmed,
-                amountRial = parsed.amountMinor,
-                parseReason = parsed.reason,
-                fingerprint = parsed.fingerprint,
-                status = LogStatus.QUEUED.name,
-                createdAt = now,
-                updatedAt = now
+            val normalized = SmsParser.normalize(rawBody)
+            val fp = SmsParser.fingerprint(bank, rawBody)
+
+            if (logDao.getByFingerprint(fp) != null) {
+                _snackbarMessage.value = "این پیامک تکراری است (Fingerprint قبلاً در Room ثبت شده است)."
+                return@launch
+            }
+
+            val parsed = SmsParser.parse(rawBody)
+            val detected = SmsParser.detectBank(bank, rawBody)
+            val initialStatus = if (parsed.amountMinor == null) SmsStatus.IGNORED else SmsStatus.NEW
+
+            val record = SmsRecord(
+                fingerprint = fp,
+                bank = bank,
+                bankTitle = detected.titleFa,
+                body = rawBody,
+                normalized = normalized,
+                amountMinor = parsed.amountMinor,
+                reason = parsed.reason,
+                status = initialStatus.name,
+                receivedMs = now,
+                storedMs = now,
+                decidedMs = if (initialStatus == SmsStatus.IGNORED) now else null
             )
-            val logId = logDao.insertLog(entry)
-            ForwardWorker.enqueueForLog(appContext, logId)
-            _snackbarMessage.value = "پیامک در صف قرار گرفت و ارسال به سرور آغاز شد."
+
+            val id = logDao.insertIgnoreDuplicate(record)
+            if (id == -1L) {
+                _snackbarMessage.value = "پیامک تکراری نادیده گرفته شد."
+            } else if (initialStatus == SmsStatus.IGNORED) {
+                _snackbarMessage.value = "پیامک غیر واریزی تشخیص داده شد (status=IGNORED, reason=${parsed.reason})."
+            } else {
+                ForwardWorker.enqueueMatcherSweep(appContext)
+                _snackbarMessage.value = "واریز معتبر ثبت شد (status=NEW)؛ در حال تطبیق با سفارش‌های منتظر..."
+            }
         }
     }
 
-    fun retrySingleLog(entry: LogEntry) {
+    /**
+     * One-tap manual approval for a `MANUAL` record (when `autoApproveInApp` is off or user confirms).
+     * Dispatches `POST /sms-approve` with HMAC-SHA256 signature via `ForwardWorker`.
+     */
+    fun approveRecordManually(record: SmsRecord, overridePublicId: String? = null, overrideKind: String? = null) {
         viewModelScope.launch {
-            val updated = entry.copy(
-                status = LogStatus.QUEUED.name,
-                errorMessage = null,
-                updatedAt = System.currentTimeMillis()
+            val finalPublicId = overridePublicId?.trim()?.takeIf { it.isNotEmpty() } ?: record.matchedId
+            val finalKind = overrideKind?.trim()?.takeIf { it.isNotEmpty() } ?: record.matchedKind ?: "order"
+
+            if (finalPublicId.isNullOrBlank()) {
+                // Re-queue as NEW to run Matcher against /sms-pending first
+                logDao.update(
+                    record.copy(
+                        status = SmsStatus.NEW.name,
+                        lastError = null
+                    )
+                )
+                ForwardWorker.enqueueMatcherSweep(appContext)
+                _snackbarMessage.value = "در حال دریافت لیست سفارش‌های منتظر از سرور برای تطبیق..."
+            } else {
+                logDao.update(
+                    record.copy(
+                        status = SmsStatus.MANUAL.name,
+                        matchedKind = finalKind,
+                        matchedId = finalPublicId,
+                        lastError = null
+                    )
+                )
+                ForwardWorker.enqueueManualApprove(appContext, record.id)
+                _snackbarMessage.value = "فرمان تأیید سفارش $finalPublicId به سرور ارسال شد."
+            }
+        }
+    }
+
+    fun retrySingleLog(entry: SmsRecord) {
+        viewModelScope.launch {
+            val nextStatus = if (entry.amountMinor != null) SmsStatus.NEW else SmsStatus.IGNORED
+            logDao.update(
+                entry.copy(
+                    status = nextStatus.name,
+                    lastError = null
+                )
             )
-            logDao.updateLog(updated)
-            ForwardWorker.enqueueForLog(appContext, entry.id)
-            _snackbarMessage.value = "تلاش مجدد برای ارسال پیامک آغاز شد."
+            if (nextStatus == SmsStatus.NEW) {
+                ForwardWorker.enqueueMatcherSweep(appContext)
+                _snackbarMessage.value = "بررسی و تطبیق مجدد با سرور آغاز شد."
+            }
         }
     }
 
     fun flushQueueNow() {
-        ForwardWorker.enqueuePendingAll(appContext)
-        _snackbarMessage.value = "صف ارسال بیدار شد؛ در حال ارسال پیامک‌های در انتظار..."
+        ForwardWorker.enqueueMatcherSweep(appContext)
+        _snackbarMessage.value = "صف تطبیق (`MatcherWorker`) بیدار شد؛ در حال بررسی `GET /sms-pending`..."
     }
 
     fun clearAllLogs() {

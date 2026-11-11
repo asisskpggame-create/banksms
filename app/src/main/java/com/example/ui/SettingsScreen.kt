@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,6 +22,7 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
@@ -33,8 +33,10 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -60,16 +62,21 @@ import com.example.network.GatewayApiClient
 fun SettingsScreen(
     settings: GatewaySettings,
     testConnectionState: TestConnectionUiState,
-    onSaveSettings: (endpointUrl: String, token: String) -> Unit,
+    onSaveSettings: (endpointUrl: String, token: String, localMaxToman: String) -> Unit,
+    onToggleAutoApproveInApp: (Boolean) -> Unit,
     onTestConnection: (endpointUrl: String, token: String) -> Unit,
+    onTestPendingEndpoint: (endpointUrl: String, token: String) -> Unit,
     onResetTestState: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var endpointInput by rememberSaveable { mutableStateOf(settings.endpointUrl) }
     var tokenInput by rememberSaveable { mutableStateOf(settings.gatewayToken) }
+    var localMaxTomanInput by rememberSaveable {
+        mutableStateOf(if (settings.localMaxToman > 0L) settings.localMaxToman.toString() else "")
+    }
     var showToken by rememberSaveable { mutableStateOf(false) }
 
-    LaunchedEffect(settings.endpointUrl, settings.gatewayToken) {
+    LaunchedEffect(settings.endpointUrl, settings.gatewayToken, settings.localMaxToman) {
         if (endpointInput.isEmpty() && settings.endpointUrl.isNotEmpty()) {
             endpointInput = settings.endpointUrl
         }
@@ -79,7 +86,7 @@ fun SettingsScreen(
     }
 
     val isHttpInsecure = endpointInput.trim().startsWith("http://", ignoreCase = true)
-    val normalizedPreview = GatewayApiClient.normalizeUrl(endpointInput)
+    val basePanelPreview = GatewayApiClient.extractBasePanelUrl(endpointInput)
     val tokenLen = tokenInput.trim().length
 
     Column(
@@ -89,40 +96,71 @@ fun SettingsScreen(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Security Notice Banner
+        // App-Side Approval Controls Card (Section 7 of APP_SIDE_APPROVAL_SPEC.md)
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
             ),
-            shape = RoundedCornerShape(16.dp)
+            shape = RoundedCornerShape(18.dp)
         ) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Lock,
-                    contentDescription = "ذخیره‌سازی رمزنگاری‌شده",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(26.dp)
-                )
-                Column {
-                    Text(
-                        text = "امنیت توکن و آدرس سرور (EncryptedSharedPreferences)",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "هیچ توکن یا آدرسی داخل APK هاردکد نشده است. اطلاعات شما با کلید سخت‌افزاری Android Keystore (AES-256-GCM) صرفاً روی همین دستگاه ذخیره می‌شود.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "تأیید خودکار در اپ (POST /sms-approve)",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (settings.autoApproveInApp) {
+                                "روشن: پس از تطبیق دقیق مبلغ با سفارش، اپ به‌طور خودکار فرمان تأیید امضاشده (HMAC-SHA256) را به سرور می‌فرستد."
+                            } else {
+                                "خاموش (پیش‌فرض امن): اپ پیامک را با سفارش تطبیق می‌دهد و به شما نوتیفیکیشن می‌دهد تا با یک دکمه تأییدش کنید."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = settings.autoApproveInApp,
+                        onCheckedChange = onToggleAutoApproveInApp,
+                        modifier = Modifier.testTag("auto_approve_switch")
                     )
                 }
+
+                OutlinedTextField(
+                    value = localMaxTomanInput,
+                    onValueChange = { localMaxTomanInput = it.filter { ch -> ch.isDigit() } },
+                    label = { Text("سقف تومانی تأیید خودکار محلی (اختیاری)") },
+                    placeholder = {
+                        Text(
+                            if (settings.lastServerMaxToman > 0) {
+                                "خالی = سقف سرور (${SmsParser.formatRial(settings.lastServerMaxToman)} تومان)"
+                            } else {
+                                "خالی = استفاده از auto_max_toman سرور"
+                            }
+                        )
+                    },
+                    supportingText = {
+                        Text("واریزهای بالاتر از این سقف (به تومان) خودکار تأیید نمی‌شوند و به حالت MANUAL می‌روند.")
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("local_max_toman_input")
+                )
             }
         }
 
@@ -141,7 +179,7 @@ fun SettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Text(
-                    text = "مشخصات اتصال به پنل ASiS",
+                    text = "آدرس پنل و توکن درگاه (EncryptedSharedPreferences)",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -152,8 +190,8 @@ fun SettingsScreen(
                         endpointInput = it
                         onResetTestState()
                     },
-                    label = { Text("آدرس سرور (HTTPS)") },
-                    placeholder = { Text("https://domain.com/panel-path/sms-in") },
+                    label = { Text("آدرس مسیر پنل سرور (HTTPS)") },
+                    placeholder = { Text("https://domain.com/panel-path") },
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.Default.Link,
@@ -164,17 +202,17 @@ fun SettingsScreen(
                     supportingText = {
                         when {
                             isHttpInsecure -> Text(
-                                text = "پروتکل http:// مجاز نیست! طبق قرارداد امنیتی حتماً از https:// استفاده کنید.",
+                                text = "پروتکل http:// مجاز نیست! حتماً از https:// استفاده کنید.",
                                 color = MaterialTheme.colorScheme.error
                             )
-                            normalizedPreview.isNotEmpty() -> Text(
-                                text = "Endpoint نهایی: $normalizedPreview",
+                            basePanelPreview.isNotEmpty() -> Text(
+                                text = "مسیرهای فعال:\n• GET $basePanelPreview/sms-pending\n• POST $basePanelPreview/sms-approve\n• POST $basePanelPreview/sms-in",
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontFamily = FontFamily.Monospace,
                                     textDirection = TextDirection.Ltr
                                 )
                             )
-                            else -> Text("اگر انتهای آدرس /sms-in را ننویسید، برنامه خودکار آن را اضافه می‌کند.")
+                            else -> Text("آدرس پایهٔ پنل یا آدرس کامل /sms-in را وارد کنید.")
                         }
                     },
                     singleLine = true,
@@ -213,7 +251,7 @@ fun SettingsScreen(
                     isError = tokenInput.isNotEmpty() && tokenLen < 20,
                     supportingText = {
                         Text(
-                            text = "طول فعلی: $tokenLen کاراکتر (حداقل مجاز سرور: ۲۰ کاراکتر)",
+                            text = "طول فعلی: $tokenLen کاراکتر (حداقل مجاز سرور: ۲۰ کاراکتر — کلید امضای HMAC-SHA256)",
                             color = if (tokenInput.isNotEmpty() && tokenLen < 20) {
                                 MaterialTheme.colorScheme.error
                             } else {
@@ -228,26 +266,27 @@ fun SettingsScreen(
                         .testTag("gateway_token_input")
                 )
 
+                Button(
+                    onClick = { onSaveSettings(endpointInput, tokenInput, localMaxTomanInput) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("save_settings_button"),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Save,
+                        contentDescription = "ذخیره تنظیمات",
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("ذخیره تنظیمات در حافظهٔ رمزنگاری‌شده")
+                }
+
+                // Two test buttons per Section 7: 1) Test sms-in («تست اتصال»)  2) Test sms-pending
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Button(
-                        onClick = { onSaveSettings(endpointInput, tokenInput) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("save_settings_button"),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Save,
-                            contentDescription = "ذخیره تنظیمات",
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("ذخیره تنظیمات")
-                    }
-
                     FilledTonalButton(
                         onClick = { onTestConnection(endpointInput, tokenInput) },
                         enabled = testConnectionState !is TestConnectionUiState.Loading,
@@ -256,26 +295,36 @@ fun SettingsScreen(
                             .testTag("test_connection_button"),
                         shape = RoundedCornerShape(12.dp)
                     ) {
-                        if (testConnectionState is TestConnectionUiState.Loading) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.NetworkCheck,
-                                contentDescription = "تست اتصال",
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Default.NetworkCheck,
+                            contentDescription = "تست اتصال sms-in",
+                            modifier = Modifier.size(18.dp)
+                        )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("تست اتصال")
+                        Text("تست اتصال (sms-in)")
+                    }
+
+                    OutlinedButton(
+                        onClick = { onTestPendingEndpoint(endpointInput, tokenInput) },
+                        enabled = testConnectionState !is TestConnectionUiState.Loading,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("test_pending_button"),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Sync,
+                            contentDescription = "تست sms-pending",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("تست sms-pending")
                     }
                 }
             }
         }
 
-        // Test Connection Result Banner
+        // Test Result Banner
         AnimatedVisibility(visible = testConnectionState !is TestConnectionUiState.Idle) {
             when (testConnectionState) {
                 is TestConnectionUiState.Loading -> {
@@ -292,14 +341,14 @@ fun SettingsScreen(
                         ) {
                             CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.5.dp)
                             Text(
-                                text = "در حال ارسال متن ثابت «${SmsParser.TEST_MARK}» به سرور...",
+                                text = "در حال برقراری ارتباط امن با سرور...",
                                 style = MaterialTheme.typography.bodyMedium
                             )
                         }
                     }
                 }
 
-                is TestConnectionUiState.Success -> {
+                is TestConnectionUiState.SuccessSmsIn -> {
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -324,7 +373,7 @@ fun SettingsScreen(
                             )
                             Column {
                                 Text(
-                                    text = "اتصال با موفقیت تایید شد (HTTP ${testConnectionState.httpCode})",
+                                    text = "تست اتصال /sms-in موفق بود (HTTP ${testConnectionState.httpCode})",
                                     style = MaterialTheme.typography.titleSmall,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                                     fontWeight = FontWeight.Bold
@@ -337,6 +386,65 @@ fun SettingsScreen(
                                     ),
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
+                            }
+                        }
+                    }
+                }
+
+                is TestConnectionUiState.SuccessPending -> {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("test_pending_success_card"),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        ),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = "تست sms-pending موفق",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Text(
+                                    text = "دریافت /sms-pending موفق (${testConnectionState.itemsCount} پرداخت منتظر)",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Text(
+                                text = "• اختلاف ساعت سرور و گوشی (offset): ${testConnectionState.clockOffsetMs} ms\n" +
+                                    "• بازهٔ تطبیق (match_window_hours): ${testConnectionState.matchWindowHours} ساعت\n" +
+                                    "• سقف تأیید خودکار سرور (auto_max_toman): ${SmsParser.formatRial(testConnectionState.autoMaxToman)} تومان",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            if (testConnectionState.sampleItems.isNotEmpty()) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+                                ) {
+                                    Column(modifier = Modifier.padding(8.dp)) {
+                                        for (item in testConnectionState.sampleItems) {
+                                            Text(
+                                                text = "${item.kind} #${item.publicId} -> ${SmsParser.formatToman(item.dueMinor)} تومان (${item.dueMinor} ریال)",
+                                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -368,9 +476,9 @@ fun SettingsScreen(
                             Column {
                                 Text(
                                     text = if (testConnectionState.httpCode != null) {
-                                        "خطا در تست اتصال (کد HTTP ${testConnectionState.httpCode})"
+                                        "خطا در ارتباط با سرور (کد HTTP ${testConnectionState.httpCode})"
                                     } else {
-                                        "خطا در تست اتصال"
+                                        "خطا در ارتباط با سرور"
                                     },
                                     style = MaterialTheme.typography.titleSmall,
                                     color = MaterialTheme.colorScheme.onErrorContainer,
@@ -390,7 +498,7 @@ fun SettingsScreen(
             }
         }
 
-        // Contract Reference Summary Card
+        // Security Notice Banner
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
@@ -398,34 +506,21 @@ fun SettingsScreen(
             ),
             shape = RoundedCornerShape(16.dp)
         ) {
-            Column(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(
-                    text = "قرارداد ارتباط با سرور (API_CONTRACT)",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary
+                Icon(
+                    imageVector = Icons.Default.Lock,
+                    contentDescription = "ذخیره‌سازی رمزنگاری‌شده",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(24.dp)
                 )
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Text(
-                        text = "POST /<PANEL_PATH>/sms-in\n{\n  \"token\": \"<SMS_GATEWAY_TOKEN>\",\n  \"sms\": \"تست اتصال\",\n  \"bank\": \"\"\n}",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                            textDirection = TextDirection.Ltr
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp)
-                    )
-                }
                 Text(
-                    text = "• کد ۲۰۰: پذیرفته‌شده (حذف از صف)\n• کد ۴۰۱: توکن نامعتبر (عدم تلاش مجدد + اعلان هشدار)\n• کد ۴۰۴: درگاه سمت سرور غیرفعال\n• کد ۴۲۹ / ۵xx / قطعی شبکه: نگهداری در صف و تلاش مجدد خودکار با Backoff نمایی",
+                    text = "امضای درخواست‌های تأیید: sig = HMAC_SHA256(token, kind|public_id|fingerprint|amount_minor|ts). توکن هرگز داخل APK هاردکد نشده و با EncryptedSharedPreferences محافظت می‌شود.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

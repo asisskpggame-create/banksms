@@ -11,9 +11,15 @@ data class BankInfo(
     val bodyKeywords: List<String>
 )
 
+/** Exact result structure matching `reference/sms_parse.py` and Section 3 of `APP_SIDE_APPROVAL_SPEC.md`. */
+data class Parsed(
+    val amountMinor: Long?, // ریال؛ null یعنی یک واریز مشخص با یک مبلغ نیست
+    val reason: String      // "" در صورت موفقیت، یا کد علت رد شدن
+)
+
 data class ParsedSms(
-    val amountMinor: Long?, // Rial (Toman * 10), null if not a clear single deposit
-    val reason: String,     // "" when amountMinor is set, else short code matching sms_parse.py
+    val amountMinor: Long?,
+    val reason: String,
     val normalizedText: String,
     val fingerprint: String,
     val bankCode: String,
@@ -21,14 +27,41 @@ data class ParsedSms(
 )
 
 /**
- * Exact Kotlin port of `reference/sms_parse.py` + Iranian bank identifier.
- * Parses bank SMS text to detect deposit amount in Rials and computes SHA-256 fingerprint.
+ * Exact Kotlin port of `reference/sms_parse.py` per Section 3 of `APP_SIDE_APPROVAL_SPEC.md`.
+ * Uses `(?U)` (UNICODE_CHARACTER_CLASS) so `\w` and `\s` behave identically to Python 3 regex.
  */
 object SmsParser {
 
     const val TEST_MARK = "تست اتصال"
     const val MAX_SMS_LENGTH = 4000
-    private const val PARSE_MAX_TEXT = 2000
+    private const val MAX_TEXT = 2000
+
+    // (?U) = UNICODE_CHARACTER_CLASS so \w and \s recognize Persian/Arabic letters like Python 3
+    private fun rx(p: String) = Regex("(?U)$p")
+
+    private val NOISE = listOf(
+        rx("""\b\d{2,4}[/\-.]\d{1,2}[/\-.]\d{1,4}\b"""),                 // تاریخ
+        rx("""\b\d{1,2}:\d{2}(?::\d{2})?\b"""),                           // ساعت
+        rx("""\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b"""),          // کارت ۱۶ رقمی
+        rx("""\d{4,6}\s?[*xX•#]{2,}\s?\d{2,4}"""),                        // 603799******1234
+        rx("""[*xX•#]{2,}\s?\d{2,6}"""),                                  // ***1234
+        rx("""(?:\+98|0098|98)?9\d{9}\b"""),                              // موبایل
+        rx("""\b0\d{8,}\b""")                                             // شمارهٔ حساب
+    )
+
+    private val NUM = rx("""(?<![\w.])([+\-])?\s?(\d{1,3}(?:,\d{3})+|[1-9]\d{3,11})(?!\d)\s?([+\-])?(?![\w])""")
+
+    private val CREDIT = listOf(
+        "واریز", "واريز", "دریافت", "ایداع", "إيداع", "افزایش", "بستانکار", "deposit", "credit", "variz"
+    )
+    private val DEBIT = listOf(
+        "برداشت", "پرداخت", "خرید", "کسر", "انتقال از", "بدهکار", "پایا", "ساتنا", "قبض",
+        "withdraw", "debit", "purchase"
+    )
+    private val BALANCE = listOf("مانده", "موجودی", "باقیمانده", "balance", "bal")
+    private val FEE = listOf("کارمزد", "wage", "fee")
+
+    private val INVISIBLE = "\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u00a0\ufeff".toSet()
 
     val KNOWN_BANKS: List<BankInfo> = listOf(
         BankInfo("mellat", "بانک ملت", listOf("mellat", "98200033", "200033", "100033", "300033"), listOf("بانک ملت", "ملت")),
@@ -38,7 +71,7 @@ object SmsParser {
         BankInfo("sepah", "بانک سپه", listOf("sepah", "98200022", "200022", "300022"), listOf("بانک سپه", "سپه")),
         BankInfo("pasargad", "بانک پاسارگاد", listOf("pasargad", "bpi", "982000888", "2000888", "500040"), listOf("پاسارگاد", "ویپاد", "wepod")),
         BankInfo("parsian", "بانک پارسیان", listOf("parsian", "pec", "98200040", "200040"), listOf("پارسیان")),
-        BankInfo("saman", "بانک سامان", listOf("saman", "sb24", "9820000", "20000", "98200084210"), listOf("بانک سامان", "سامان", "بلوبانک", "بلو", "blu")),
+        BankInfo("saman", "بانک سامان", listOf("saman", "sb24", "9820000", "20000", "98200084210"), listOf("بانک سامان", "سامان")),
         BankInfo("blu", "بلوبانک", listOf("blu", "blubank", "98200084210"), listOf("بلوبانک", "بلو بانک", "حساب بلو")),
         BankInfo("enbank", "بانک اقتصاد نوین", listOf("enbank", "98200050", "200050"), listOf("اقتصاد نوین", "اقتصادنوین")),
         BankInfo("keshavarzi", "بانک کشاورزی", listOf("keshavarzi", "bki", "98200090", "200090", "500022"), listOf("کشاورزی", "بانک کشاورزی")),
@@ -55,206 +88,134 @@ object SmsParser {
         BankInfo("postbank", "پست بانک", listOf("postbank", "98200084"), listOf("پست بانک"))
     )
 
-    private val DIGIT_MAP: Map<Char, Char> = buildMap {
-        val persian = "۰۱۲۳۴۵۶۷۸۹"
-        val arabic = "٠١٢٣٤٥٦٧٨٩"
-        for (i in 0..9) {
-            put(persian[i], ('0' + i))
-            put(arabic[i], ('0' + i))
-        }
-        put('٬', ',')
-        put('،', ',')
+    private fun mapChar(c: Char): Char = when (c) {
+        in '\u06F0'..'\u06F9' -> '0' + (c - '\u06F0')   // ۰-۹
+        in '\u0660'..'\u0669' -> '0' + (c - '\u0660')   // ٠-٩
+        '\u066C', '\u060C' -> ','                       // ٬ ،
+        in INVISIBLE -> ' '
+        else -> c
     }
 
-    private val INVISIBLE_CHARS: Set<Char> = setOf(
-        '\u200c', '\u200d', '\u200e', '\u200f',
-        '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-        '\u00a0', '\ufeff'
-    )
-
-    private val NOISE_PATTERNS: List<Regex> = listOf(
-        Regex("""\b\d{2,4}[/\-.]\d{1,2}[/\-.]\d{1,4}\b"""),                 // 1405/08/20  20-08-2026
-        Regex("""\b\d{1,2}:\d{2}(?::\d{2})?\b"""),                           // 14:35  14:35:10
-        Regex("""\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b"""),         // 16-digit card
-        Regex("""\d{4,6}\s?[*xX•#]{2,}\s?\d{2,4}"""),                        // 603799******1234
-        Regex("""[*xX•#]{2,}\s?\d{2,6}"""),                                  // ***1234
-        Regex("""(?:\+98|0098|98)?9\d{9}\b"""),                              // mobile number
-        Regex("""\b0\d{8,}\b""")                                             // account numbers start with 0
-    )
-
-    private val NUM_REGEX = Regex(
-        """(?<![a-zA-Z0-9_.])([+\-])?\s?(\d{1,3}(?:,\d{3})+|[1-9]\d{3,11})(?!\d)\s?([+\-])?(?![a-zA-Z0-9_])"""
-    )
-
-    private val CREDIT_WORDS = listOf(
-        "واریز", "واريز", "دریافت", "ایداع", "إيداع", "افزایش", "بستانکار", "deposit", "credit", "variz"
-    )
-    private val DEBIT_WORDS = listOf(
-        "برداشت", "پرداخت", "خرید", "کسر", "انتقال از", "بدهکار", "پایا", "ساتنا", "قبض",
-        "withdraw", "debit", "purchase"
-    )
-    private val BALANCE_WORDS = listOf("مانده", "موجودی", "باقیمانده", "balance", "bal")
-    private val FEE_WORDS = listOf("کارمزد", "wage", "fee")
-
-    fun normalize(rawText: String?): String {
-        if (rawText.isNullOrEmpty()) return ""
-        val truncated = rawText.take(PARSE_MAX_TEXT)
-        val sb = StringBuilder(truncated.length)
-        for (ch in truncated) {
-            when {
-                DIGIT_MAP.containsKey(ch) -> sb.append(DIGIT_MAP[ch])
-                INVISIBLE_CHARS.contains(ch) -> sb.append(' ')
-                else -> sb.append(ch)
-            }
-        }
-        return sb.toString()
+    /** ارقام لاتین، یک فاصله بین کلمات، خطوط خالی حذف. فرم hash و پارس. */
+    fun normalize(text: String?): String =
+        (text ?: "").take(MAX_TEXT).map(::mapChar).joinToString("")
             .lines()
-            .map { line -> line.trim().split(Regex("""\s+""")).filter { it.isNotEmpty() }.joinToString(" ") }
-            .filter { it.isNotEmpty() }
-            .joinToString("\n")
+            .filter { it.isNotBlank() }
+            .joinToString("\n") { it.trim().split(Regex("\\s+")).joinToString(" ") }
             .trim()
-    }
 
     fun fingerprint(bank: String?, text: String?): String {
-        val normBank = (bank ?: "").trim().lowercase(Locale.ROOT)
-        val normText = normalize(text)
-        val raw = "$normBank\n$normText".lowercase(Locale.ROOT)
-        val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(Charsets.UTF_8))
-        return digest.joinToString("") { "%02x".format(it) }
+        val raw = "${(bank ?: "").trim().lowercase(Locale.ROOT)}\n${normalize(text)}".lowercase(Locale.ROOT)
+        return MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+    }
+
+    private fun has(words: List<String>, chunk: String): Boolean {
+        val low = chunk.lowercase(Locale.ROOT)
+        return words.any { low.contains(it) }
+    }
+
+    /** Exact `parse(raw: String): Parsed` function from Section 3 of APP_SIDE_APPROVAL_SPEC.md. */
+    fun parse(raw: String): Parsed {
+        val text = normalize(raw)
+        if (text.isEmpty()) return Parsed(null, "empty")
+
+        var cleaned = text
+        for (p in NOISE) {
+            cleaned = p.replace(cleaned) { " ".repeat(it.value.length) } // طول حفظ شود
+        }
+
+        val creditMarked = has(CREDIT, cleaned)
+        val debitMarked = has(DEBIT, cleaned)
+        val credits = mutableListOf<Long>()
+
+        for (m in NUM.findAll(cleaned)) {
+            val start = m.range.first
+            val before = cleaned.substring(maxOf(0, start - 14), start)
+            val tail = before.trimEnd(' ', ':', '：', '=', '-')
+            val sign = m.groupValues[1].ifEmpty { m.groupValues[3] }
+            if (has(BALANCE, tail.takeLast(12)) || has(FEE, tail.takeLast(10))) continue
+            val value = m.groupValues[2].replace(",", "").toLongOrNull() ?: continue
+            if (sign == "-") return Parsed(null, "debit")
+            when {
+                sign == "+" || (creditMarked && !debitMarked) -> credits += value
+                debitMarked && !creditMarked -> return Parsed(null, "debit")
+                creditMarked && debitMarked -> return Parsed(null, "mixed_direction")
+            }
+        }
+        if (credits.isEmpty()) return Parsed(null, if (!debitMarked) "no_credit_amount" else "debit")
+        if (credits.toSet().size > 1) return Parsed(null, "several_amounts")
+        var amount = credits[0]
+        if ("تومان" in text && "ریال" !in text && "ريال" !in text) amount *= 10
+        return Parsed(amount, "")
     }
 
     fun detectBank(sender: String?, body: String?): BankInfo {
         val cleanSender = (sender ?: "").trim().lowercase(Locale.ROOT)
         val cleanBody = normalize(body).lowercase(Locale.ROOT)
 
-        // First match by sender number / shortcode / ID
         if (cleanSender.isNotEmpty()) {
             KNOWN_BANKS.firstOrNull { bank ->
                 bank.senderKeywords.any { kw -> cleanSender.contains(kw.lowercase(Locale.ROOT)) }
             }?.let { return it }
         }
-
-        // Next match by SMS body keywords
         if (cleanBody.isNotEmpty()) {
             KNOWN_BANKS.firstOrNull { bank ->
                 bank.bodyKeywords.any { kw -> cleanBody.contains(kw.lowercase(Locale.ROOT)) }
             }?.let { return it }
         }
 
-        val fallbackCode = cleanSender.take(32).ifEmpty { "unknown" }
-        val fallbackTitle = if (cleanSender.isNotEmpty()) "فرستنده: $cleanSender" else "بانک نامشخص"
+        val rawBank = (sender ?: "").trim().take(32)
+        val fallbackTitle = if (rawBank.isNotEmpty()) "فرستنده: $rawBank" else "بانک نامشخص"
         return BankInfo(
-            code = fallbackCode,
+            code = rawBank,
             titleFa = fallbackTitle,
             senderKeywords = emptyList(),
             bodyKeywords = emptyList()
         )
     }
 
-    private fun hasAnyWord(words: List<String>, chunk: String): Boolean {
-        val low = chunk.lowercase(Locale.ROOT)
-        return words.any { low.contains(it) }
-    }
+    /** Full parse helper used by UI and Receiver. Uses raw sender (`bank` up to 32 chars) for fingerprint. */
+    fun parseFull(rawText: String?, sender: String? = null): ParsedSms {
+        val rawSenderBank = (sender ?: "").trim().take(32)
+        val detected = detectBank(rawSenderBank, rawText)
+        val norm = normalize(rawText)
+        val fp = fingerprint(rawSenderBank, rawText ?: "")
 
-    fun parse(rawText: String?, sender: String? = null, explicitBankCode: String? = null): ParsedSms {
-        val detected = detectBank(sender, rawText)
-        val bankCode = explicitBankCode?.trim()?.takeIf { it.isNotEmpty() } ?: detected.code
-        val bankTitle = KNOWN_BANKS.firstOrNull { it.code.equals(bankCode, ignoreCase = true) }?.titleFa
-            ?: detected.titleFa
-
-        val text = normalize(rawText)
-        val fp = fingerprint(bankCode, rawText)
-
-        if (text.isEmpty()) {
-            return ParsedSms(null, "empty", text, fp, bankCode, bankTitle)
+        if (norm.contains(TEST_MARK)) {
+            return ParsedSms(
+                amountMinor = null,
+                reason = "test",
+                normalizedText = norm,
+                fingerprint = fp,
+                bankCode = rawSenderBank.ifEmpty { detected.code },
+                bankTitleFa = detected.titleFa
+            )
         }
 
-        if (text.contains(TEST_MARK)) {
-            return ParsedSms(null, "test", text, fp, bankCode, bankTitle)
-        }
-
-        var cleaned = text
-        for (pattern in NOISE_PATTERNS) {
-            cleaned = pattern.replace(cleaned) { matchResult ->
-                " ".repeat(matchResult.range.last - matchResult.range.first + 1)
-            }
-        }
-
-        val creditMarked = hasAnyWord(CREDIT_WORDS, cleaned)
-        val debitMarked = hasAnyWord(DEBIT_WORDS, cleaned)
-
-        val credits = mutableListOf<Long>()
-        val trimChars = charArrayOf(' ', ':', '：', '=', '-')
-
-        for (match in NUM_REGEX.findAll(cleaned)) {
-            val startIdx = match.range.first
-            val before = cleaned.substring(maxOf(0, startIdx - 14), startIdx)
-            val beforeTail = before.trimEnd(*trimChars)
-            val sign = match.groups[1]?.value?.takeIf { it.isNotEmpty() }
-                ?: match.groups[3]?.value?.takeIf { it.isNotEmpty() }
-                ?: ""
-
-            val tail12 = if (beforeTail.length > 12) beforeTail.takeLast(12) else beforeTail
-            val tail10 = if (beforeTail.length > 10) beforeTail.takeLast(10) else beforeTail
-
-            if (hasAnyWord(BALANCE_WORDS, tail12) || hasAnyWord(FEE_WORDS, tail10)) {
-                continue
-            }
-
-            val rawNumber = match.groups[2]?.value?.replace(",", "") ?: continue
-            val value = rawNumber.toLongOrNull() ?: continue
-
-            if (sign == "-") {
-                return ParsedSms(null, "debit", text, fp, bankCode, bankTitle)
-            }
-            if (sign == "+" || (creditMarked && !debitMarked)) {
-                credits.add(value)
-            } else if (debitMarked && !creditMarked) {
-                return ParsedSms(null, "debit", text, fp, bankCode, bankTitle)
-            } else if (creditMarked && debitMarked) {
-                return ParsedSms(null, "mixed_direction", text, fp, bankCode, bankTitle)
-            }
-        }
-
-        if (credits.isEmpty()) {
-            val reason = if (!debitMarked) "no_credit_amount" else "debit"
-            return ParsedSms(null, reason, text, fp, bankCode, bankTitle)
-        }
-
-        if (credits.toSet().size > 1) {
-            return ParsedSms(null, "several_amounts", text, fp, bankCode, bankTitle)
-        }
-
-        var amount = credits[0]
-        if (text.contains("تومان") && !text.contains("ریال") && !text.contains("ريال")) {
-            amount *= 10L
-        }
-
+        val parsed = parse(rawText ?: "")
         return ParsedSms(
-            amountMinor = amount,
-            reason = "",
-            normalizedText = text,
+            amountMinor = parsed.amountMinor,
+            reason = parsed.reason,
+            normalizedText = norm,
             fingerprint = fp,
-            bankCode = bankCode,
-            bankTitleFa = bankTitle
+            bankCode = rawSenderBank.ifEmpty { detected.code },
+            bankTitleFa = detected.titleFa
         )
     }
 
-    fun formatToman(amountRial: Long): String {
-        val toman = amountRial / 10L
-        return NumberFormat.getNumberInstance(Locale.US).format(toman)
-    }
+    fun formatToman(amountRial: Long): String =
+        NumberFormat.getNumberInstance(Locale.US).format(amountRial / 10L)
 
-    fun formatRial(amountRial: Long): String {
-        return NumberFormat.getNumberInstance(Locale.US).format(amountRial)
-    }
+    fun formatRial(amountRial: Long): String =
+        NumberFormat.getNumberInstance(Locale.US).format(amountRial)
 
     fun reasonLabelFa(reason: String): String = when (reason) {
-        "" -> "واریز معتبر (تشخیص مبلغ دقیق)"
-        "test" -> "پیام تست اتصال به درگاه"
+        "" -> "واریز معتبر (مبلغ دقیق استخراج شد)"
+        "test" -> "پیام تست اتصال"
         "empty" -> "متن پیامک خالی است"
-        "debit" -> "پیامک برداشت / خرید (نادیده گرفته‌شده توسط سرور)"
-        "mixed_direction" -> "هم‌زمان کلمات واریز و برداشت بدون علامت +/-"
+        "debit" -> "برداشت / خرید (نادیده گرفته‌شده)"
+        "mixed_direction" -> "جهت مبهم (هم‌زمان کلمات واریز و برداشت)"
         "no_credit_amount" -> "مبلغ واریز یافت نشد"
         "several_amounts" -> "چند مبلغ متفاوت در یک پیامک (مبهم)"
         else -> reason

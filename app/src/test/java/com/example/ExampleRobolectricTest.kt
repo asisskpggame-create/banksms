@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.SettingsRepo
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -24,6 +25,9 @@ class ExampleRobolectricTest {
         repo.saveEndpointAndToken("https://my-panel.example.com/secret-path", "my_super_secret_gateway_token_12345")
         val saved = repo.readSettings()
         assertTrue(saved.isConfigured)
-        assertEquals("https://my-panel.example.com/secret-path/sms-in", saved.normalizedEndpointUrl)
+        assertFalse(saved.autoApproveInApp) // Default OFF per Section 7
+        assertEquals("https://my-panel.example.com/secret-path/sms-in", saved.smsInUrl)
+        assertEquals("https://my-panel.example.com/secret-path/sms-pending", saved.smsPendingUrl)
+        assertEquals("https://my-panel.example.com/secret-path/sms-approve", saved.smsApproveUrl)
     }
 }

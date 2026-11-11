@@ -10,36 +10,58 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface LogDao {
 
-    @Query("SELECT * FROM sms_logs ORDER BY createdAt DESC")
-    fun observeAllLogs(): Flow<List<LogEntry>>
+    @Query("SELECT * FROM sms_records ORDER BY receivedMs DESC, id DESC")
+    fun observeAllLogs(): Flow<List<SmsRecord>>
 
-    @Query("SELECT * FROM sms_logs WHERE status IN ('QUEUED', 'RETRY') ORDER BY createdAt ASC")
-    suspend fun getPendingLogs(): List<LogEntry>
+    @Query("SELECT * FROM sms_records WHERE status IN ('NEW', 'RETRY') AND amountMinor IS NOT NULL ORDER BY receivedMs ASC, id ASC")
+    suspend fun getActiveDepositsForMatching(): List<SmsRecord>
 
-    @Query("SELECT * FROM sms_logs WHERE id = :id LIMIT 1")
-    suspend fun getLogById(id: Long): LogEntry?
+    @Query("SELECT * FROM sms_records WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): SmsRecord?
 
-    @Query("SELECT COUNT(*) FROM sms_logs WHERE status IN ('QUEUED', 'RETRY')")
+    @Query("SELECT * FROM sms_records WHERE fingerprint = :fp LIMIT 1")
+    suspend fun getByFingerprint(fp: String): SmsRecord?
+
+    @Query("SELECT COUNT(*) FROM sms_records WHERE status IN ('NEW', 'RETRY', 'CLAIMED')")
     fun observeQueueCount(): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM sms_logs WHERE status = 'SENT'")
-    fun observeSentCount(): Flow<Int>
+    @Query("SELECT COUNT(*) FROM sms_records WHERE status = 'MATCHED'")
+    fun observeMatchedCount(): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM sms_logs WHERE status = 'FAILED'")
-    fun observeFailedCount(): Flow<Int>
+    @Query("SELECT COUNT(*) FROM sms_records WHERE status IN ('MANUAL', 'AMBIGUOUS', 'FAILED')")
+    fun observeActionNeededCount(): Flow<Int>
 
-    @Query("SELECT * FROM sms_logs WHERE status = 'SENT' ORDER BY updatedAt DESC LIMIT 1")
-    fun observeLastSentLog(): Flow<LogEntry?>
+    @Query("SELECT * FROM sms_records WHERE status = 'MATCHED' ORDER BY decidedMs DESC, id DESC LIMIT 1")
+    fun observeLastMatchedLog(): Flow<SmsRecord?>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertLog(entry: LogEntry): Long
+    /**
+     * Unique index on `fingerprint`: OnConflictStrategy.IGNORE returns -1L when duplicate,
+     * matching Section 6 ("unique(fingerprint)؛ درج تکراری = duplicate و بی‌صدا نادیده").
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnoreDuplicate(record: SmsRecord): Long
 
     @Update
-    suspend fun updateLog(entry: LogEntry)
+    suspend fun update(record: SmsRecord)
 
-    @Query("DELETE FROM sms_logs")
+    /**
+     * Claim-first atomic update before network call (`NEW/RETRY/MANUAL -> CLAIMED`).
+     */
+    @Query("UPDATE sms_records SET status = 'CLAIMED', matchedKind = :kind, matchedId = :publicId, attempts = attempts + 1 WHERE id = :id AND status IN ('NEW', 'RETRY', 'MANUAL')")
+    suspend fun claimForApproval(id: Long, kind: String, publicId: String): Int
+
+    /**
+     * Expire `NEW` deposits older than `cutoffMs` (`now - match_window_hours`).
+     */
+    @Query("UPDATE sms_records SET status = 'EXPIRED', decidedMs = :nowMs, reason = 'expired_window' WHERE status = 'NEW' AND receivedMs < :cutoffMs")
+    suspend fun expireOldNewDeposits(cutoffMs: Long, nowMs: Long): Int
+
+    /**
+     * Delete records older than 30 days (`KEEP_DAYS = 30`).
+     */
+    @Query("DELETE FROM sms_records WHERE storedMs < :cutoffMs")
+    suspend fun deleteOlderThan(cutoffMs: Long): Int
+
+    @Query("DELETE FROM sms_records")
     suspend fun clearAllLogs()
-
-    @Query("DELETE FROM sms_logs WHERE id = :id")
-    suspend fun deleteLogById(id: Long)
 }

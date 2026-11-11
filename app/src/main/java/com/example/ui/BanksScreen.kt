@@ -5,12 +5,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -49,7 +46,7 @@ fun BanksScreen(
     var parserTestInput by rememberSaveable {
         mutableStateOf("بانک سامان\nواریز به حساب 821-100-1234567-1\nمبلغ 485,000 تومان\nمانده 9,200,000 تومان\n1405/08/20 14:22")
     }
-    val parsedPreview = SmsParser.parse(parserTestInput)
+    val parsedPreview = SmsParser.parseFull(parserTestInput)
 
     Column(
         modifier = modifier
@@ -58,7 +55,7 @@ fun BanksScreen(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Optional Bank Filter Card (Section 4 of ROADMAP.md)
+        // Optional Bank Filter Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
@@ -85,9 +82,9 @@ fun BanksScreen(
                         )
                         Text(
                             text = if (settings.filterBanksEnabled) {
-                                "فقط پیامک بانک‌های انتخاب‌شده در زیر به سرور ارسال می‌شوند."
+                                "فقط پیامک بانک‌های انتخاب‌شده در زیر پردازش می‌شوند."
                             } else {
-                                "همهٔ پیامک‌های دریافتی به سرور ارسال می‌شوند (رفتار پیش‌فرض سرور)."
+                                "پیش‌فرض فعال: همهٔ فرستنده‌ها پردازش می‌شوند (طبق بخش ۲ مشخصات)."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -142,7 +139,7 @@ fun BanksScreen(
             }
         }
 
-        // Interactive Local Parser Tester (`reference/sms_parse.py` verifier)
+        // Interactive Local Parser Tester (`SmsParser.kt` = `sms_parse.py`)
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
@@ -157,12 +154,12 @@ fun BanksScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "آزمایشگر زندهٔ پارسر پیامک (منطق sms_parse.py)",
+                    text = "آزمایشگر زندهٔ پارسر پیامک (پورت ۱:۱ از sms_parse.py)",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "هر متن پیامک بانکی را در کادر زیر قرار دهید تا دقیقاً ببینید سرور ربات شما چگونه مبلغ ریال/تومان و اثرانگشت (Fingerprint) آن را استخراج می‌کند:",
+                    text = "هر متن پیامک بانکی را در کادر زیر قرار دهید تا نتیجهٔ دقیق SmsParser.parse (مبلغ ریال، کد علت رد شدن و SHA-256 fingerprint) را ببینید:",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -189,20 +186,20 @@ fun BanksScreen(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            text = "بانک تشخیص‌داده‌شده: ${parsedPreview.bankTitleFa} (code: ${parsedPreview.bankCode})",
+                            text = "بانک تشخیص‌داده‌شده: ${parsedPreview.bankTitleFa}",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary
                         )
                         if (parsedPreview.amountMinor != null) {
                             Text(
-                                text = "مبلغ واریز (amount_minor): ${SmsParser.formatRial(parsedPreview.amountMinor)} ریال (معادل ${SmsParser.formatToman(parsedPreview.amountMinor)} تومان)",
+                                text = "amountMinor = ${SmsParser.formatRial(parsedPreview.amountMinor)} ریال (${SmsParser.formatToman(parsedPreview.amountMinor)} تومان)",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                         } else {
                             Text(
-                                text = "مبلغ واریز: None • دلیل: ${SmsParser.reasonLabelFa(parsedPreview.reason)} (${parsedPreview.reason})",
+                                text = "amountMinor = null • reason = \"${parsedPreview.reason}\" (${SmsParser.reasonLabelFa(parsedPreview.reason)})",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.error
                             )
@@ -213,45 +210,6 @@ fun BanksScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                }
-            }
-        }
-
-        // Build & Self-Signing Instructions Card (as requested in AI_STUDIO_PROMPT.txt item 2)
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            ),
-            shape = RoundedCornerShape(16.dp)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(
-                    text = "راهنمای بیلد و امضای شخصی (بدون هیچ قفل امضا)",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = "این برنامه هیچ بررسی امضا (Signature Check) یا کد مخفی ندارد و کاملاً متعلق به شماست. برای ساخت کلید امضای شخصی و خروجی Release:",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Text(
-                        text = "1) ساخت کلید امضای شخصی:\nkeytool -genkey -v -keystore asis-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload\n\n2) بیلد نسخه Release:\nKEYSTORE_PATH=/path/to/asis-release.jks STORE_PASSWORD=*** KEY_PASSWORD=*** ./gradlew assembleRelease",
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(10.dp)
-                    )
                 }
             }
         }

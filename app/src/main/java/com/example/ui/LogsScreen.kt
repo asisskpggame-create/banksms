@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -19,10 +18,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RemoveCircleOutline
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -32,6 +34,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -49,36 +52,48 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.example.data.LogEntry
-import com.example.data.LogStatus
 import com.example.data.SmsParser
+import com.example.data.SmsRecord
+import com.example.data.SmsStatus
 
 private enum class LogFilter(val labelFa: String) {
     ALL("همه"),
-    SENT("ارسال‌شده"),
-    QUEUE("در صف / تلاش مجدد"),
-    FAILED("ناموفق")
+    MATCHED("تأییدشده (MATCHED)"),
+    MANUAL_AMBIGUOUS("نیازمند تأیید دستی"),
+    NEW_RETRY("در صف (NEW/RETRY)"),
+    IGNORED("نادیده (IGNORED)")
 }
 
 @Composable
 fun LogsScreen(
-    logs: List<LogEntry>,
-    onRetrySingle: (LogEntry) -> Unit,
+    logs: List<SmsRecord>,
+    onApproveManually: (record: SmsRecord, overridePublicId: String?, overrideKind: String?) -> Unit,
+    onRetrySingle: (SmsRecord) -> Unit,
     onClearAllLogs: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var selectedFilter by rememberSaveable { mutableStateOf(LogFilter.ALL) }
     var showClearConfirm by rememberSaveable { mutableStateOf(false) }
+    var manualDialogRecord by remember { mutableStateOf<SmsRecord?>(null) }
 
     val filteredLogs by remember(logs, selectedFilter) {
         derivedStateOf {
             when (selectedFilter) {
                 LogFilter.ALL -> logs
-                LogFilter.SENT -> logs.filter { it.statusEnum == LogStatus.SENT }
-                LogFilter.QUEUE -> logs.filter {
-                    it.statusEnum == LogStatus.QUEUED || it.statusEnum == LogStatus.RETRY
+                LogFilter.MATCHED -> logs.filter { it.statusEnum == SmsStatus.MATCHED }
+                LogFilter.MANUAL_AMBIGUOUS -> logs.filter {
+                    it.statusEnum == SmsStatus.MANUAL ||
+                        it.statusEnum == SmsStatus.AMBIGUOUS ||
+                        it.statusEnum == SmsStatus.FAILED
                 }
-                LogFilter.FAILED -> logs.filter { it.statusEnum == LogStatus.FAILED }
+                LogFilter.NEW_RETRY -> logs.filter {
+                    it.statusEnum == SmsStatus.NEW ||
+                        it.statusEnum == SmsStatus.RETRY ||
+                        it.statusEnum == SmsStatus.CLAIMED
+                }
+                LogFilter.IGNORED -> logs.filter {
+                    it.statusEnum == SmsStatus.IGNORED || it.statusEnum == SmsStatus.EXPIRED
+                }
             }
         }
     }
@@ -89,14 +104,13 @@ fun LogsScreen(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Header row with filter chips and Clear Logs button
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "لاگ پردازش پیامک‌ها (${logs.size})",
+                text = "لاگ پیامک‌ها و تطبیق (${logs.size})",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -156,12 +170,12 @@ fun LogsScreen(
                         modifier = Modifier.size(56.dp)
                     )
                     Text(
-                        text = "هیچ لاگی در این بخش ثبت نشده است",
+                        text = "هیچ رکوردی در این فیلتر وجود ندارد",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "به محض دریافت پیامک بانکی جدید یا زدن دکمهٔ «پیامک تستی» در صفحهٔ خانه، وضعیت ارسال با رنگ‌بندی در اینجا نمایش داده می‌شود.",
+                        text = "پیامک‌های دریافتی پس از پارس شدن با وضعیت‌های NEW، IGNORED، MATCHED، MANUAL یا AMBIGUOUS در اینجا نمایش داده می‌شوند.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -180,8 +194,16 @@ fun LogsScreen(
                     items = filteredLogs,
                     key = { it.id }
                 ) { entry ->
-                    LogEntryCard(
+                    SmsRecordCard(
                         entry = entry,
+                        onDirectApprove = {
+                            if (!entry.matchedId.isNullOrBlank()) {
+                                onApproveManually(entry, entry.matchedId, entry.matchedKind)
+                            } else {
+                                manualDialogRecord = entry
+                            }
+                        },
+                        onOpenManualDialog = { manualDialogRecord = entry },
                         onRetry = { onRetrySingle(entry) }
                     )
                 }
@@ -189,12 +211,23 @@ fun LogsScreen(
         }
     }
 
+    manualDialogRecord?.let { rec ->
+        ManualOrderApproveDialog(
+            record = rec,
+            onDismiss = { manualDialogRecord = null },
+            onConfirm = { publicId, kind ->
+                manualDialogRecord = null
+                onApproveManually(rec, publicId, kind)
+            }
+        )
+    }
+
     if (showClearConfirm) {
         AlertDialog(
             onDismissRequest = { showClearConfirm = false },
-            title = { Text("پاک کردن تمام لاگ‌ها؟") },
+            title = { Text("پاک کردن تمام رکوردها؟") },
             text = {
-                Text("آیا مطمئن هستید که می‌خواهید تاریخچهٔ لاگ‌های داخل برنامه را پاک کنید؟")
+                Text("آیا مطمئن هستید که می‌خواهید تاریخچهٔ پیامک‌های ذخیره‌شده در Room را پاک کنید؟")
             },
             confirmButton = {
                 Button(
@@ -220,33 +253,51 @@ fun LogsScreen(
 }
 
 @Composable
-private fun LogEntryCard(
-    entry: LogEntry,
+private fun SmsRecordCard(
+    entry: SmsRecord,
+    onDirectApprove: () -> Unit,
+    onOpenManualDialog: () -> Unit,
     onRetry: () -> Unit
 ) {
-    // Status color coding per spec/ROADMAP.md:
-    // Green = SENT, Yellow/Amber = QUEUED/RETRY, Red = FAILED
     val (statusLabel, badgeBgColor, badgeTextColor, statusIcon) = when (entry.statusEnum) {
-        LogStatus.SENT -> Quadruple(
-            "ارسال‌شده (${entry.httpCode ?: 200})",
+        SmsStatus.MATCHED -> Quadruple(
+            "تأییدشده (MATCHED)",
             Color(0xFF10B981).copy(alpha = 0.18f),
             Color(0xFF10B981),
             Icons.Default.CheckCircle
         )
-        LogStatus.QUEUED -> Quadruple(
-            "در صف ارسال",
+        SmsStatus.NEW, SmsStatus.CLAIMED -> Quadruple(
+            if (entry.statusEnum == SmsStatus.CLAIMED) "در حال ارسال (CLAIMED)" else "واریز جدید (NEW)",
             Color(0xFFF59E0B).copy(alpha = 0.18f),
             Color(0xFFF59E0B),
             Icons.Default.HourglassTop
         )
-        LogStatus.RETRY -> Quadruple(
-            "در صف تلاش مجدد (${entry.retryCount})",
+        SmsStatus.RETRY -> Quadruple(
+            "صف تلاش مجدد (${entry.attempts})",
             Color(0xFFF59E0B).copy(alpha = 0.18f),
             Color(0xFFF59E0B),
             Icons.Default.HourglassTop
         )
-        LogStatus.FAILED -> Quadruple(
-            "ناموفق ${entry.httpCode?.let { "($it)" } ?: ""}",
+        SmsStatus.MANUAL -> Quadruple(
+            "منتظر تأیید شما (MANUAL)",
+            Color(0xFF06B6D4).copy(alpha = 0.18f),
+            Color(0xFF06B6D4),
+            Icons.Default.WarningAmber
+        )
+        SmsStatus.AMBIGUOUS -> Quadruple(
+            "مبهم - چند سفارش (AMBIGUOUS)",
+            Color(0xFFF43F5E).copy(alpha = 0.18f),
+            Color(0xFFF43F5E),
+            Icons.Default.WarningAmber
+        )
+        SmsStatus.IGNORED, SmsStatus.EXPIRED -> Quadruple(
+            if (entry.statusEnum == SmsStatus.EXPIRED) "منقضی (EXPIRED)" else "نادیده (${entry.reason})",
+            Color(0xFF64748B).copy(alpha = 0.18f),
+            Color(0xFF94A3B8),
+            Icons.Default.RemoveCircleOutline
+        )
+        SmsStatus.FAILED -> Quadruple(
+            "خطای دائمی (${entry.httpCode ?: 401})",
             Color(0xFFF43F5E).copy(alpha = 0.18f),
             Color(0xFFF43F5E),
             Icons.Default.Error
@@ -273,7 +324,7 @@ private fun LogEntryCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = entry.bankTitle,
                         style = MaterialTheme.typography.titleSmall,
@@ -281,7 +332,7 @@ private fun LogEntryCard(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "فرستنده: ${entry.sender} • کد بانک: ${entry.bankCode}",
+                        text = "فرستنده: ${entry.bank.ifEmpty { "نامشخص" }}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -312,7 +363,7 @@ private fun LogEntryCard(
                 }
             }
 
-            if (entry.amountRial != null) {
+            if (entry.amountMinor != null) {
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
@@ -324,12 +375,12 @@ private fun LogEntryCard(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "مبلغ واریز تشخیص‌داده‌شده:",
+                            text = "مبلغ واریز (ریال / تومان):",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                         Text(
-                            text = "${SmsParser.formatToman(entry.amountRial)} تومان (${SmsParser.formatRial(entry.amountRial)} ریال)",
+                            text = "${SmsParser.formatToman(entry.amountMinor)} تومان (${SmsParser.formatRial(entry.amountMinor)} ریال)",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Bold
@@ -338,7 +389,17 @@ private fun LogEntryCard(
                 }
             }
 
-            // Full SMS Body
+            // Matched Order/Top-Up Badge
+            entry.matchedLabelFa()?.let { label ->
+                Text(
+                    text = "سفارش منطبق: $label",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // Raw unmodified SMS Body
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 color = MaterialTheme.colorScheme.surface
@@ -353,19 +414,17 @@ private fun LogEntryCard(
                 )
             }
 
-            if (entry.serverStatus != null) {
-                Text(
-                    text = "پاسخ سرور: status=${entry.serverStatus} • تایید خودکار=${entry.approvedCount ?: 0} • اثرانگشت=${entry.fingerprint.take(10)}…",
-                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
+            Text(
+                text = "Fingerprint: ${entry.fingerprint.take(16)}…",
+                style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
-            if (!entry.errorMessage.isNullOrBlank()) {
+            if (!entry.lastError.isNullOrBlank()) {
                 Text(
-                    text = entry.errorMessage,
+                    text = entry.lastError,
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (entry.statusEnum == LogStatus.FAILED) {
+                    color = if (entry.statusEnum == SmsStatus.FAILED || entry.statusEnum == SmsStatus.AMBIGUOUS) {
                         MaterialTheme.colorScheme.error
                     } else {
                         MaterialTheme.colorScheme.tertiary
@@ -373,34 +432,119 @@ private fun LogEntryCard(
                 )
             }
 
+            // Action row: One-Tap Approve Button for MANUAL / AMBIGUOUS / NEW deposits
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = rememberFormattedTime(entry.updatedAt),
+                    text = rememberFormattedTime(entry.receivedMs),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                if (entry.statusEnum != LogStatus.SENT) {
-                    TextButton(
-                        onClick = onRetry,
-                        modifier = Modifier.testTag("retry_log_button_${entry.id}")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "تلاش مجدد",
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("ارسال مجدد اکنون")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (entry.amountMinor != null && entry.statusEnum != SmsStatus.MATCHED) {
+                        if (!entry.matchedId.isNullOrBlank()) {
+                            Button(
+                                onClick = onDirectApprove,
+                                modifier = Modifier.testTag("approve_record_button_${entry.id}"),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DoneAll,
+                                    contentDescription = "تأیید سفارش",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("تأیید ${entry.matchedId}")
+                            }
+                        } else if (entry.statusEnum == SmsStatus.AMBIGUOUS || entry.statusEnum == SmsStatus.MANUAL) {
+                            OutlinedButton(
+                                onClick = onOpenManualDialog,
+                                modifier = Modifier.testTag("manual_id_approve_button_${entry.id}"),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("تأیید با کد سفارش")
+                            }
+                        }
+
+                        TextButton(
+                            onClick = onRetry,
+                            modifier = Modifier.testTag("retry_log_button_${entry.id}")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "تطبیق مجدد",
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("تطبیق مجدد")
+                        }
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun ManualOrderApproveDialog(
+    record: SmsRecord,
+    onDismiss: () -> Unit,
+    onConfirm: (publicId: String, kind: String) -> Unit
+) {
+    var publicId by rememberSaveable { mutableStateOf(record.matchedId.orEmpty()) }
+    var kind by rememberSaveable { mutableStateOf(record.matchedKind ?: "order") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("تأیید دستی واریز (POST /sms-approve)") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "مبلغ واریز: ${record.amountMinor?.let { SmsParser.formatToman(it) } ?: "0"} تومان",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                OutlinedTextField(
+                    value = publicId,
+                    onValueChange = { publicId = it },
+                    label = { Text("شناسه سفارش یا شارژ (public_id مثلاً ORD123)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = kind == "order",
+                        onClick = { kind = "order" },
+                        label = { Text("سفارش (order)") }
+                    )
+                    FilterChip(
+                        selected = kind == "topup",
+                        onClick = { kind = "topup" },
+                        label = { Text("شارژ کیف پول (topup)") }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(publicId.trim(), kind) },
+                enabled = publicId.isNotBlank()
+            ) {
+                Text("ارسال فرمان تأیید امضاشده")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("انصراف")
+            }
+        }
+    )
 }
 
 private data class Quadruple<A, B, C, D>(

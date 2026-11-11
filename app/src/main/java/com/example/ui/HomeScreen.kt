@@ -1,5 +1,10 @@
 package com.example.ui
 
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -11,7 +16,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,12 +25,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
@@ -57,6 +61,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -65,8 +70,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.data.GatewaySettings
-import com.example.data.LogEntry
 import com.example.data.SmsParser
+import com.example.data.SmsRecord
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -80,7 +85,7 @@ fun HomeScreen(
     queueCount: Int,
     sentCount: Int,
     failedCount: Int,
-    lastSentLog: LogEntry?,
+    lastSentLog: SmsRecord?,
     onToggleService: (Boolean) -> Unit,
     onRequestPermissions: () -> Unit,
     onFlushQueue: () -> Unit,
@@ -89,7 +94,15 @@ fun HomeScreen(
     onNavigateToLogs: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var showSimulateDialog by rememberSaveable { mutableStateOf(false) }
+
+    val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as? PowerManager
+    val isIgnoringBatteryOptimizations = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        powerManager?.isIgnoringBatteryOptimizations(context.packageName) ?: true
+    } else {
+        true
+    }
 
     Column(
         modifier = modifier
@@ -100,14 +113,13 @@ fun HomeScreen(
     ) {
         // Hero Service Status Card
         ServiceHeroCard(
-            serviceEnabled = settings.serviceEnabled,
-            isConfigured = settings.isConfigured,
+            settings = settings,
             isOnline = isOnline,
             onToggleService = onToggleService,
             onNavigateToSettings = onNavigateToSettings
         )
 
-        // Alert Banner if 401 Token Error occurred recently
+        // Alert Banner if 401 Token/HMAC Error occurred recently
         AnimatedVisibility(visible = !settings.lastTokenError.isNullOrBlank()) {
             Card(
                 modifier = Modifier
@@ -133,7 +145,7 @@ fun HomeScreen(
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "خطای ۴۰۱: توکن درگاه نامعتبر است",
+                            text = "خطای ۴۰۱: توکن یا امضای درگاه نامعتبر است",
                             style = MaterialTheme.typography.titleSmall,
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             fontWeight = FontWeight.Bold
@@ -154,7 +166,7 @@ fun HomeScreen(
             }
         }
 
-        // Permissions & Play Protect Transparency Card
+        // Permissions Card
         if (!hasSmsPermissions || !hasNotificationPermission) {
             PermissionsRequiredCard(
                 hasSmsPermissions = hasSmsPermissions,
@@ -169,9 +181,9 @@ fun HomeScreen(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             StatCard(
-                title = "در صف ارسال",
+                title = "واریز منتظر (NEW)",
                 value = queueCount.toString(),
-                subtitle = "منتظر / تلاش مجدد",
+                subtitle = "در صف تطبیق",
                 accentColor = MaterialTheme.colorScheme.tertiary,
                 modifier = Modifier
                     .weight(1f)
@@ -179,9 +191,9 @@ fun HomeScreen(
                     .clickable { onNavigateToLogs() }
             )
             StatCard(
-                title = "ارسال موفق",
+                title = "تأییدشده (MATCHED)",
                 value = sentCount.toString(),
-                subtitle = "کد ۲۰۰ سرور",
+                subtitle = "تطبیق و تأیید موفق",
                 accentColor = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
                     .weight(1f)
@@ -189,9 +201,9 @@ fun HomeScreen(
                     .clickable { onNavigateToLogs() }
             )
             StatCard(
-                title = "خطای دائمی",
+                title = "نیازمند بررسی دستی",
                 value = failedCount.toString(),
-                subtitle = "نیازمند بررسی",
+                subtitle = "MANUAL / مبهم",
                 accentColor = MaterialTheme.colorScheme.error,
                 modifier = Modifier
                     .weight(1f)
@@ -200,7 +212,7 @@ fun HomeScreen(
             )
         }
 
-        // Quick Action Buttons (Flush Queue + Simulate Bank SMS)
+        // Quick Action Buttons (Run Matcher Now + Simulate Bank SMS)
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
@@ -215,7 +227,7 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "عملیات سریع و تست پایپ‌لاین",
+                    text = "عملیات سریع تطبیق و شبیه‌سازی (App-Side Approval)",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -232,11 +244,11 @@ fun HomeScreen(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
-                            contentDescription = "ارسال مجدد صف",
+                            contentDescription = "تطبیق با سرور",
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("بیدار کردن صف")
+                        Text("تطبیق فوری (Sweep)")
                     }
                     OutlinedButton(
                         onClick = { showSimulateDialog = true },
@@ -257,11 +269,72 @@ fun HomeScreen(
             }
         }
 
-        // Last Sent SMS Summary Card
-        LastSentSummaryCard(
-            lastSentLog = lastSentLog,
+        // Last Matched SMS Summary Card
+        LastMatchedSummaryCard(
+            lastMatchedLog = lastSentLog,
             onViewAllLogs = onNavigateToLogs
         )
+
+        // Battery Optimization Card for Xiaomi/Samsung/Huawei (Section 8)
+        if (!isIgnoringBatteryOptimizations) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("battery_optimization_card"),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                ),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.BatteryChargingFull,
+                            contentDescription = "بهینه‌سازی باتری",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "عدم محدودیت باتری (مخصوص Xiaomi / Samsung / Huawei)",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Text(
+                        text = "برای اطمینان از اینکه در حالت صفحه خاموش، پیامک‌های واریز بلافاصله پارس و با سرور تطبیق داده شوند، محدودیت باتری را برای ASiS pannel غیرفعال کنید.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            runCatching {
+                                val intent = Intent(
+                                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                    Uri.parse("package:${context.packageName}")
+                                )
+                                context.startActivity(intent)
+                            }.onFailure {
+                                runCatching {
+                                    context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("ignore_battery_opt_button")
+                    ) {
+                        Text("غیرفعال کردن بهینه‌سازی باتری (Unrestricted)")
+                    }
+                }
+            }
+        }
 
         // Security & Privacy Footer Card
         Card(
@@ -306,12 +379,14 @@ fun HomeScreen(
 
 @Composable
 private fun ServiceHeroCard(
-    serviceEnabled: Boolean,
-    isConfigured: Boolean,
+    settings: GatewaySettings,
     isOnline: Boolean,
     onToggleService: (Boolean) -> Unit,
     onNavigateToSettings: () -> Unit
 ) {
+    val serviceEnabled = settings.serviceEnabled
+    val isConfigured = settings.isConfigured
+
     val gradientColors = if (serviceEnabled && isConfigured) {
         listOf(Color(0xFF064E3B), Color(0xFF0F2942))
     } else if (!isConfigured) {
@@ -344,7 +419,8 @@ private fun ServiceHeroCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     Surface(
                         shape = CircleShape,
@@ -362,18 +438,19 @@ private fun ServiceHeroCard(
                     }
                     Column {
                         Text(
-                            text = if (serviceEnabled) "سرویس فورواردر روشن است" else "سرویس فورواردر متوقف است",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = Color.White
+                            text = if (serviceEnabled) "تطبیق و تأیید سمت اپ فعال است" else "سرویس متوقف است",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
                         )
                         Text(
                             text = when {
                                 !isConfigured -> "نیازمند ثبت آدرس سرور و توکن در تنظیمات"
-                                isOnline -> "متصل به اینترنت • آماده دریافت پیامک بانکی"
-                                else -> "آفلاین • پیامک‌ها در صف ذخیره می‌شوند"
+                                settings.autoApproveInApp -> "حالت: تأیید خودکار (POST /sms-approve با امضای HMAC)"
+                                else -> "حالت: تطبیق خودکار + تأیید با یک دکمه (پیش‌فرض امن)"
                             },
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color.White.copy(alpha = 0.8f)
+                            color = Color.White.copy(alpha = 0.85f)
                         )
                     }
                 }
@@ -394,7 +471,6 @@ private fun ServiceHeroCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Network chip
                 Surface(
                     shape = RoundedCornerShape(50),
                     color = Color.White.copy(alpha = 0.12f)
@@ -411,7 +487,11 @@ private fun ServiceHeroCard(
                             modifier = Modifier.size(16.dp)
                         )
                         Text(
-                            text = if (isOnline) "اینترنت برقرار" else "بدون اینترنت (صف فعال)",
+                            text = if (isOnline) {
+                                "آنلاین • اختلاف ساعت سرور: ${settings.lastClockOffsetMs / 1000}s"
+                            } else {
+                                "آفلاین (واریزها در صف NEW می‌مانند)"
+                            },
                             style = MaterialTheme.typography.labelMedium,
                             color = Color.White
                         )
@@ -480,10 +560,10 @@ private fun PermissionsRequiredCard(
             Text(
                 text = buildString {
                     if (!hasSmsPermissions) {
-                        append("• مجوز دریافت و خواندن پیامک (RECEIVE_SMS / READ_SMS) برای خواندن پیامک‌های واریز بانکی الزامی است.\n")
+                        append("• مجوز دریافت و خواندن پیامک (RECEIVE_SMS / READ_SMS) برای خواندن و پارس پیامک‌های واریز بانکی الزامی است.\n")
                     }
                     if (!hasNotificationPermission) {
-                        append("• مجوز اعلان (POST_NOTIFICATIONS) برای هشدار فوری در صورت خطای ۴۰۱ توکن لازم است.")
+                        append("• مجوز اعلان (POST_NOTIFICATIONS) برای هشدار سفارش‌های منطبق، وضعیت AMBIGUOUS و خطای ۴۰۱ لازم است.")
                     }
                 }.trim(),
                 style = MaterialTheme.typography.bodySmall,
@@ -529,7 +609,9 @@ private fun StatCard(
             Text(
                 text = title,
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = value,
@@ -549,8 +631,8 @@ private fun StatCard(
 }
 
 @Composable
-private fun LastSentSummaryCard(
-    lastSentLog: LogEntry?,
+private fun LastMatchedSummaryCard(
+    lastMatchedLog: SmsRecord?,
     onViewAllLogs: () -> Unit
 ) {
     Card(
@@ -579,12 +661,12 @@ private fun LastSentSummaryCard(
                 ) {
                     Icon(
                         imageVector = Icons.Default.CheckCircle,
-                        contentDescription = "آخرین ارسال",
+                        contentDescription = "آخرین تأیید",
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(20.dp)
                     )
                     Text(
-                        text = "آخرین ارسال موفق به سرور",
+                        text = "آخرین سفارش تأییدشده (MATCHED)",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -603,22 +685,23 @@ private fun LastSentSummaryCard(
                 }
             }
 
-            if (lastSentLog == null) {
+            if (lastMatchedLog == null) {
                 Text(
-                    text = "هنوز پیامکی به سرور ارسال نشده است. می‌توانید از دکمهٔ «پیامک تستی» یا «تست اتصال» استفاده کنید.",
+                    text = "هنوز واریزی با سفارش تطبیق و تأیید نشده است. برای تست، از «پیامک تستی» یا تب «لاگ‌ها» استفاده کنید.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
-                val timeStr = rememberFormattedTime(lastSentLog.updatedAt)
+                val timeStr = rememberFormattedTime(lastMatchedLog.decidedMs ?: lastMatchedLog.receivedMs)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = lastSentLog.bankTitle,
+                        text = "${lastMatchedLog.bankTitle} • ${lastMatchedLog.matchedLabelFa() ?: ""}",
                         style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = timeStr,
@@ -626,25 +709,20 @@ private fun LastSentSummaryCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                if (lastSentLog.amountRial != null) {
+                if (lastMatchedLog.amountMinor != null) {
                     Text(
-                        text = "مبلغ تشخیص‌داده‌شده: ${SmsParser.formatToman(lastSentLog.amountRial)} تومان (${SmsParser.formatRial(lastSentLog.amountRial)} ریال)",
+                        text = "مبلغ واریز: ${SmsParser.formatToman(lastMatchedLog.amountMinor)} تومان (${SmsParser.formatRial(lastMatchedLog.amountMinor)} ریال)",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }
                 Text(
-                    text = lastSentLog.body,
+                    text = lastMatchedLog.body,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "پاسخ سرور: status=${lastSentLog.serverStatus ?: "ok"} • تایید خودکار: ${lastSentLog.approvedCount ?: 0}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
                 )
             }
         }
@@ -658,30 +736,30 @@ private fun SimulateBankSmsDialog(
 ) {
     var sender by rememberSaveable { mutableStateOf("98200033") }
     var body by rememberSaveable {
-        mutableStateOf("بانک ملت\nواریز به حساب 0123456789\nمبلغ: 2,500,000 ریال\nمانده: 18,400,000 ریال\n1405/08/20-15:30")
+        mutableStateOf("بانک ملت\nواریز به حساب 0123456789\nمبلغ: 5,000,070 ریال\nمانده: 18,400,000 ریال\n1405/08/20-15:30")
     }
 
-    val previewParsed = SmsParser.parse(body, sender)
+    val previewParsed = SmsParser.parseFull(body, sender)
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = "شبیه‌سازی پیامک بانکی واقعی",
+                text = "شبیه‌سازی پیامک بانکی (ورود به صف تطبیق)",
                 style = MaterialTheme.typography.titleLarge
             )
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    text = "این پیامک دقیقاً مانند پیامک دریافتی از سیم‌کارت وارد صف Room شده و توسط ForwardWorker به سرور شما ارسال می‌شود.",
+                    text = "این پیامک با SmsParser پارس شده، در صورت واریز بودن با وضعیت NEW ذخیره می‌شود و بلافاصله MatcherWorker لیست سفارش‌های منتظر (GET /sms-pending) را بررسی می‌کند.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 OutlinedTextField(
                     value = sender,
                     onValueChange = { sender = it },
-                    label = { Text("شماره فرستنده (مثلاً 98200033)") },
+                    label = { Text("فرستنده (bank / originatingAddress)") },
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -690,7 +768,7 @@ private fun SimulateBankSmsDialog(
                 OutlinedTextField(
                     value = body,
                     onValueChange = { body = it },
-                    label = { Text("متن پیامک بانکی") },
+                    label = { Text("متن خام پیامک بانکی") },
                     minLines = 4,
                     maxLines = 6,
                     modifier = Modifier
@@ -708,15 +786,15 @@ private fun SimulateBankSmsDialog(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
-                            text = "پیش‌نمایش پارسر (${previewParsed.bankTitleFa}):",
+                            text = "خروجی SmsParser.parse:",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary
                         )
                         Text(
                             text = if (previewParsed.amountMinor != null) {
-                                "مبلغ واریز: ${SmsParser.formatToman(previewParsed.amountMinor)} تومان (${SmsParser.formatRial(previewParsed.amountMinor)} ریال)"
+                                "status=NEW • amountMinor=${SmsParser.formatRial(previewParsed.amountMinor)} ریال (${SmsParser.formatToman(previewParsed.amountMinor)} تومان)"
                             } else {
-                                "وضعیت: ${SmsParser.reasonLabelFa(previewParsed.reason)}"
+                                "status=IGNORED • reason=${previewParsed.reason} (${SmsParser.reasonLabelFa(previewParsed.reason)})"
                             },
                             style = MaterialTheme.typography.bodySmall
                         )
@@ -731,11 +809,11 @@ private fun SimulateBankSmsDialog(
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.Send,
-                    contentDescription = "ارسال",
+                    contentDescription = "ثبت و تطبیق",
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("افزودن به صف و ارسال")
+                Text("ثبت و اجرای تطبیق")
             }
         },
         dismissButton = {
