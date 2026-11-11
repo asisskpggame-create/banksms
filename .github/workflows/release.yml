@@ -1,0 +1,95 @@
+name: Build & Release APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK Platform 36.1 & Build-Tools
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36.1" "build-tools;36.0.0" || sdkmanager "platforms;android-36" "build-tools;35.0.0"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.1.0'
+
+      - name: Prepare Signing Keystore (Debug & Release)
+        env:
+          KEYSTORE_BASE64_SECRET: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASS_SECRET: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASS_SECRET: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -f debug.keystore.base64 ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          else
+            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          if [ -n "$KEYSTORE_BASE64_SECRET" ]; then
+            echo "$KEYSTORE_BASE64_SECRET" | base64 -d > my-upload-key.jks
+            echo "STORE_PASSWORD=${STORE_PASS_SECRET}" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${KEY_PASS_SECRET}" >> $GITHUB_ENV
+          else
+            keytool -genkeypair -v -keystore my-upload-key.jks \
+              -storepass asisrelease123 \
+              -keypass asisrelease123 \
+              -alias upload \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=ASiS Panel,OU=Gateway,O=ASiS,L=Tehran,S=Tehran,C=IR"
+            echo "STORE_PASSWORD=asisrelease123" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=asisrelease123" >> $GITHUB_ENV
+          fi
+          echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> $GITHUB_ENV
+
+      - name: Build Signed Release & Debug APKs
+        run: |
+          gradle assembleRelease assembleDebug --no-daemon
+
+      - name: Prepare Release Artifacts
+        run: |
+          mkdir -p release-assets
+          cp app/build/outputs/apk/release/app-release.apk release-assets/ASiS-pannel-release.apk
+          cp app/build/outputs/apk/debug/app-debug.apk release-assets/ASiS-pannel-debug.apk
+
+      - name: Upload APK Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ASiS-pannel-APKs
+          path: release-assets/*.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: "ASiS pannel v1.0.${{ github.run_number }} (Release APK)"
+          body: |
+            ### دانلود مستقیم فایل نصبی ASiS pannel
+            - **`ASiS-pannel-release.apk`**: نسخهٔ نهایی و امضاشده (Release) آمادهٔ نصب روی اندروید.
+            - **`ASiS-pannel-debug.apk`**: نسخهٔ Debug.
+          files: |
+            release-assets/ASiS-pannel-release.apk
+            release-assets/ASiS-pannel-debug.apk
+          draft: false
+          prerelease: false
