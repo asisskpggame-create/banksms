@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">ASiS pannel</string>
+    <string name="app_subtitle">درگاه فورواردر پیامک بانکی</string>
+    <string name="nav_home">خانه</string>
+    <string name="nav_logs">لاگ‌ها</string>
+    <string name="nav_banks">بانک‌ها و پارسر</string>
+    <string name="nav_settings">تنظیمات</string>
+    <string name="permission_privacy_notice">این برنامه پیامک‌های بانکی دریافتی را صرفاً به آدرس سرور شخصی خودتان (که در تنظیمات وارد می‌کنید) با رمزنگاری TLS ارسال می‌کند و هیچ داده‌ای به سرور ثالث ارسال نمی‌شود.</string>
+    <string name="test_connection_payload">تست اتصال</string>
+    <string name="notif_channel_name">هشدارهای درگاه پیامک ASiS</string>
+    <string name="notif_channel_desc">اطلاع‌رسانی خطای توکن (۴۰۱) و وضعیت ارسال پیامک‌ها</string>
+</resources>

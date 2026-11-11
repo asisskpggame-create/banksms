@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="64dp"
+    android:height="64dp"
+    android:viewportWidth="64"
+    android:viewportHeight="64">
+    <!-- Shield outer -->
+    <path
+        android:fillColor="#10B981"
+        android:pathData="M32,4 L54,13 L54,30 C54,45.5 44.6,56.8 32,61 C19.4,56.8 10,45.5 10,30 L10,13 Z" />
+    <!-- Shield inner dark -->
+    <path
+        android:fillColor="#0B192C"
+        android:pathData="M32,9 L49,16.2 L49,29.8 C49,42.5 41.4,51.9 32,55.6 C22.6,51.9 15,42.5 15,29.8 L15,16.2 Z" />
+    <!-- SMS Envelope + Forward Arrow -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M21,23 H43 C44.1,23 45,23.9 45,25 V37 C45,38.1 44.1,39 43,39 H21 C19.9,39 19,38.1 19,37 V25 C19,23.9 19.9,23 21,23 Z M21.5,25.5 L32,32.2 L42.5,25.5 Z" />
+    <path
+        android:fillColor="#34D399"
+        android:pathData="M32,42 L39,49 H34.5 V54 H29.5 V49 H25 Z" />
+</vector>

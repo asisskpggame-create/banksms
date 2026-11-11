@@ -1,0 +1,6 @@
+{
+  "name": "ASiS pannel",
+  "description": "فورواردر امن و خودکار پیامک‌های بانکی به سرور شخصی پنل ASiS با صف هوشمند، رمزنگاری توکن و پشتیبانی از تلاش مجدد",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
