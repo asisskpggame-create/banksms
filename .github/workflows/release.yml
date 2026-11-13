@@ -22,13 +22,15 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK Platform 35 & Build-Tools
+      - name: Configure Pre-Installed Android SDK (Platform 35)
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          ANDROID_SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$ANDROID_SDK" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK" >> $GITHUB_ENV
+          SDKMANAGER=$(find "$ANDROID_SDK/cmdline-tools" -name sdkmanager | sort -V | tail -n 1)
+          echo "Using sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Align Gradle Catalog for Public GitHub Runner
         run: |
@@ -41,6 +43,7 @@ jobs:
           replacements = {
               'agp = "9.1.1"': 'agp = "8.7.3"',
               'coreKtx = "1.18.0"': 'coreKtx = "1.15.0"',
+              'activityCompose = "1.10.1"': 'activityCompose = "1.9.3"',
               'kotlin = "2.2.10"': 'kotlin = "2.1.0"',
               'googleDevtoolsKsp = "2.3.5"': 'googleDevtoolsKsp = "2.1.0-1.0.29"',
               'googleServices = "4.5.0"': 'googleServices = "4.4.2"',
@@ -53,6 +56,10 @@ jobs:
               'roomRuntime = "2.7.0"': 'roomRuntime = "2.6.1"',
               'roomKtx = "2.7.0"': 'roomKtx = "2.6.1"',
               'roomCompiler = "2.7.0"': 'roomCompiler = "2.6.1"',
+              'workRuntimeKtx = "2.10.0"': 'workRuntimeKtx = "2.9.1"',
+              'kotlinxCoroutinesAndroid = "1.10.2"': 'kotlinxCoroutinesAndroid = "1.9.0"',
+              'kotlinxCoroutinesCore = "1.10.2"': 'kotlinxCoroutinesCore = "1.9.0"',
+              'kotlinxCoroutinesTest = "1.10.2"': 'kotlinxCoroutinesTest = "1.9.0"',
           }
           for old, new in replacements.items():
               toml = toml.replace(old, new)
@@ -73,6 +80,9 @@ jobs:
           ).replace(
               "alias(libs.plugins.google.services) apply false",
               "// alias(libs.plugins.google.services) apply false"
+          ).replace(
+              "alias(libs.plugins.secrets) apply false",
+              "// alias(libs.plugins.secrets) apply false"
           )
           with open("build.gradle.kts", "w", encoding="utf-8") as f:
               f.write(root_kts)
@@ -90,8 +100,16 @@ jobs:
               "alias(libs.plugins.google.services)",
               "// alias(libs.plugins.google.services)"
           ).replace(
+              "alias(libs.plugins.secrets)",
+              "// alias(libs.plugins.secrets)"
+          ).replace(
               "googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }",
               "// googleServices not required"
+          )
+          gradle_kts = re.sub(
+              r"secrets\s*\{[^}]*\}",
+              "// secrets plugin not required",
+              gradle_kts
           )
           gradle_kts = re.sub(
               r"compileSdk\s*\{[^}]*\{[^}]*\}[^}]*\}",
@@ -106,12 +124,24 @@ jobs:
           with open("app/build.gradle.kts", "w", encoding="utf-8") as f:
               f.write(gradle_kts)
 
-          # 4. Patch settings.gradle.kts foojay version for Gradle 8.11.1
+          # 4. Patch settings.gradle.kts foojay version & gradle.properties for CI
           with open("settings.gradle.kts", "r", encoding="utf-8") as f:
               settings_kts = f.read()
           settings_kts = settings_kts.replace('version "1.0.0"', 'version "0.8.0"')
           with open("settings.gradle.kts", "w", encoding="utf-8") as f:
               f.write(settings_kts)
+
+          with open("gradle.properties", "r", encoding="utf-8") as f:
+              gprops = f.read()
+          gprops = gprops.replace("org.gradle.configuration-cache=true", "org.gradle.configuration-cache=false")
+          with open("gradle.properties", "w", encoding="utf-8") as f:
+              f.write(gprops)
+
+          with open("gradle/wrapper/gradle-wrapper.properties", "r", encoding="utf-8") as f:
+              gw = f.read()
+          gw = gw.replace("gradle-9.3.1-bin.zip", "gradle-8.11.1-bin.zip")
+          with open("gradle/wrapper/gradle-wrapper.properties", "w", encoding="utf-8") as f:
+              f.write(gw)
 
           # 5. Patch AppDatabase.kt for Room 2.6.1 compatibility on CI
           with open("app/src/main/java/com/example/data/AppDatabase.kt", "r", encoding="utf-8") as f:
