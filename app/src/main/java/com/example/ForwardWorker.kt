@@ -103,6 +103,7 @@ class ForwardWorker(
             // 1. Delete old SMS records (> 30 days)
             val thirtyDaysAgoMs = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(KEEP_DAYS)
             dao.deleteOlderThan(thirtyDaysAgoMs)
+            dao.releaseStaleClaims()
 
             val activeDeposits = dao.getActiveDepositsForMatching()
             if (activeDeposits.isEmpty()) {
@@ -138,10 +139,11 @@ class ForwardWorker(
                 is PendingFetchResult.Unauthorized401 -> {
                     settingsRepo.recordTokenError(pendingResult.message)
                     NotificationHelper.notifyTokenError(appContext, pendingResult.message)
+                    // RETRY (not FAILED): saving a corrected token starts a new sweep that picks these up again
                     for (rec in activeDeposits) {
                         dao.update(
                             rec.copy(
-                                status = SmsStatus.FAILED.name,
+                                status = SmsStatus.RETRY.name,
                                 httpCode = 401,
                                 lastError = pendingResult.message
                             )
@@ -356,9 +358,10 @@ class ForwardWorker(
                     }
 
                     is GatewayResult.PermanentFailure -> {
+                        val keepForLater = res.isTokenError || res.httpCode == 404
                         dao.update(
                             entry.copy(
-                                status = SmsStatus.FAILED.name,
+                                status = if (keepForLater) SmsStatus.RETRY.name else SmsStatus.FAILED.name,
                                 httpCode = res.httpCode,
                                 decidedMs = nowMs,
                                 lastError = res.message
@@ -476,7 +479,9 @@ class ForwardWorker(
                 is ApproveResult.Unauthorized401 -> {
                     dao.update(
                         currentBeforeCall.copy(
-                            status = SmsStatus.FAILED.name,
+                            status = SmsStatus.RETRY.name,
+                            matchedKind = itemKind,
+                            matchedId = itemPublicId,
                             httpCode = 401,
                             lastError = result.message,
                             decidedMs = nowMs

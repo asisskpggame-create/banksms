@@ -200,3 +200,6 @@ async def sms_approve(request: web.Request) -> web.Response:
         )
 
     return web.json_response({"ok": True, "status": "approved"})
+
+# NOTE: this reference is now merged (with hardening) into the bot's `app/web/sms_in.py` (v0.20.161) — use that file.
+

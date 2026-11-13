@@ -51,6 +51,14 @@ interface LogDao {
     suspend fun claimForApproval(id: Long, kind: String, publicId: String): Int
 
     /**
+     * A row can only be CLAIMED while the worker mutex is held, so any CLAIMED row seen at the start of a sweep was left
+     * behind by a crash / killed process mid-request. Put it back in the queue (the server answers `duplicate` if the
+     * first request actually went through).
+     */
+    @Query("UPDATE sms_records SET status = 'RETRY' WHERE status = 'CLAIMED'")
+    suspend fun releaseStaleClaims(): Int
+
+    /**
      * Expire `NEW` deposits older than `cutoffMs` (`now - match_window_hours`).
      */
     @Query("UPDATE sms_records SET status = 'EXPIRED', decidedMs = :nowMs, reason = 'expired_window' WHERE status = 'NEW' AND receivedMs < :cutoffMs")
