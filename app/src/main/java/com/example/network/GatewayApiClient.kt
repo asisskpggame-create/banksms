@@ -56,6 +56,10 @@ sealed class ApproveResult {
         val status: String // "approved" | "duplicate"
     ) : ApproveResult()
 
+    data class NotFound404FallbackToSmsIn(
+        val message: String
+    ) : ApproveResult()
+
     data class Conflict409(
         val reason: String
     ) : ApproveResult()
@@ -354,6 +358,11 @@ object GatewayApiClient {
                     code == 401 -> {
                         ApproveResult.Unauthorized401(
                             message = reason ?: "توکن یا امضای HMAC نامعتبر است (خطای ۴۰۱)."
+                        )
+                    }
+                    code == 404 || code == 405 -> {
+                        ApproveResult.NotFound404FallbackToSmsIn(
+                            message = reason ?: "سرور روی نسخهٔ کلاسیک /sms-in است؛ ارسال مستقیم به /sms-in انجام می‌شود."
                         )
                     }
                     code == 429 -> {

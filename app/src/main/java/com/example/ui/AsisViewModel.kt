@@ -76,7 +76,7 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                 delay(30_000L)
                 val current = settingsRepo.readSettings()
                 if (current.serviceEnabled && current.isConfigured) {
-                    ForwardWorker.enqueueMatcherSweep(appContext)
+                    ForwardWorker.runSweepNow(appContext)
                 }
             }
         }
@@ -89,7 +89,7 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
     fun setServiceEnabled(enabled: Boolean) {
         settingsRepo.setServiceEnabled(enabled)
         if (enabled) {
-            ForwardWorker.enqueueMatcherSweep(appContext)
+            viewModelScope.launch { ForwardWorker.runSweepNow(appContext) }
             _snackbarMessage.value = "سرویس تطبیق و تأیید پیامک فعال شد."
         } else {
             _snackbarMessage.value = "سرویس موقتاً متوقف شد."
@@ -99,7 +99,7 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
     fun setAutoApproveInApp(enabled: Boolean) {
         settingsRepo.setAutoApproveInApp(enabled)
         if (enabled) {
-            ForwardWorker.enqueueMatcherSweep(appContext)
+            viewModelScope.launch { ForwardWorker.runSweepNow(appContext) }
             _snackbarMessage.value = "تأیید خودکار در اپ فعال شد."
         } else {
             _snackbarMessage.value = "تأیید خودکار خاموش شد (فقط تطبیق و اعلان برای تأیید دستی)."
@@ -115,7 +115,7 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         val maxToman = localMaxTomanStr.trim().replace(",", "").toLongOrNull()?.coerceAtLeast(0L) ?: 0L
         settingsRepo.saveEndpointAndToken(endpointUrl, token, maxToman)
         _snackbarMessage.value = "تنظیمات با رمزنگاری AES-256 ذخیره شد."
-        ForwardWorker.enqueueMatcherSweep(appContext)
+        viewModelScope.launch { ForwardWorker.runSweepNow(appContext) }
     }
 
     fun runTestConnection(endpointUrl: String, token: String) {
@@ -244,15 +244,15 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
             } else if (initialStatus == SmsStatus.IGNORED) {
                 _snackbarMessage.value = "پیامک غیر واریزی تشخیص داده شد (status=IGNORED, reason=${parsed.reason})."
             } else {
-                ForwardWorker.enqueueMatcherSweep(appContext)
                 _snackbarMessage.value = "واریز معتبر ثبت شد (status=NEW)؛ در حال تطبیق با سفارش‌های منتظر..."
+                ForwardWorker.runSweepNow(appContext)
             }
         }
     }
 
     /**
      * One-tap manual approval for a `MANUAL` record (when `autoApproveInApp` is off or user confirms).
-     * Dispatches `POST /sms-approve` with HMAC-SHA256 signature via `ForwardWorker`.
+     * Dispatches `POST /sms-approve` with HMAC-SHA256 signature immediately.
      */
     fun approveRecordManually(record: SmsRecord, overridePublicId: String? = null, overrideKind: String? = null) {
         viewModelScope.launch {
@@ -260,15 +260,14 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
             val finalKind = overrideKind?.trim()?.takeIf { it.isNotEmpty() } ?: record.matchedKind ?: "order"
 
             if (finalPublicId.isNullOrBlank()) {
-                // Re-queue as NEW to run Matcher against /sms-pending first
                 logDao.update(
                     record.copy(
                         status = SmsStatus.NEW.name,
                         lastError = null
                     )
                 )
-                ForwardWorker.enqueueMatcherSweep(appContext)
                 _snackbarMessage.value = "در حال دریافت لیست سفارش‌های منتظر از سرور برای تطبیق..."
+                ForwardWorker.runSweepNow(appContext)
             } else {
                 logDao.update(
                     record.copy(
@@ -278,8 +277,8 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                         lastError = null
                     )
                 )
-                ForwardWorker.enqueueManualApprove(appContext, record.id)
-                _snackbarMessage.value = "فرمان تأیید سفارش $finalPublicId به سرور ارسال شد."
+                _snackbarMessage.value = "در حال ارسال فرمان تأیید سفارش $finalPublicId به سرور..."
+                ForwardWorker.runManualApproveNow(appContext, record.id)
             }
         }
     }
@@ -294,15 +293,17 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                 )
             )
             if (nextStatus == SmsStatus.NEW) {
-                ForwardWorker.enqueueMatcherSweep(appContext)
                 _snackbarMessage.value = "بررسی و تطبیق مجدد با سرور آغاز شد."
+                ForwardWorker.runSweepNow(appContext)
             }
         }
     }
 
     fun flushQueueNow() {
-        ForwardWorker.enqueueMatcherSweep(appContext)
-        _snackbarMessage.value = "صف تطبیق (`MatcherWorker`) بیدار شد؛ در حال بررسی `GET /sms-pending`..."
+        viewModelScope.launch {
+            _snackbarMessage.value = "در حال بررسی سفارش‌های منتظر از سرور و تطبیق پیامک‌ها..."
+            ForwardWorker.runSweepNow(appContext)
+        }
     }
 
     fun clearAllLogs() {

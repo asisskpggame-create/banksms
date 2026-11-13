@@ -86,7 +86,7 @@ class SmsReceiver : BroadcastReceiver() {
 
                 val rowId = dao.insertIgnoreDuplicate(record)
                 if (rowId != -1L && initialStatus == SmsStatus.NEW) {
-                    ForwardWorker.enqueueMatcherSweep(appContext)
+                    ForwardWorker.runSweepNow(appContext)
                 }
             } finally {
                 pendingResult.finish()
