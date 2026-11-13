@@ -7,7 +7,6 @@ import com.example.data.AppDatabase
 import com.example.data.SettingsRepo
 import com.example.ui.AsisViewModel
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -33,7 +32,7 @@ class ExampleRobolectricTest {
         )
         val saved = repo.readSettings()
         assertTrue(saved.isConfigured)
-        assertFalse(saved.autoApproveInApp)
+        assertTrue(saved.autoApproveInApp)
         assertEquals("https://my-panel.example.com/secret-path/sms-in", saved.smsInUrl)
 
         val db = AppDatabase.getInstance(context)

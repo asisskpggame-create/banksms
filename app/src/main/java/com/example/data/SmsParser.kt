@@ -47,9 +47,17 @@ object SmsParser {
         Regex("""(?<![\p{L}\p{N}_])0\d{8,}(?![\p{L}\p{N}_])""")                              // شمارهٔ حساب
     )
 
+    // The unit may touch the number («50,000,000ریال»). `(?!\d|,\d)` stops «50,000,000ریال» from backtracking to «50,000».
+    // MUST stay identical to `_NUM` in the bot's app/services/sms_parse.py (the server re-parses every SMS).
     private val NUM = Regex(
-        """(?<![\p{L}\p{N}_.])([+\-])?\s?(\d{1,3}(?:,\d{3})+|[1-9]\d{3,11})(?!\d)\s?([+\-])?(?![\p{L}\p{N}_])"""
+        """(?<![A-Za-z0-9_.])(?<!\d,)([+\-])?\s?(\d{1,3}(?:,\d{3})+|[1-9]\d{3,11})(?!\d|,\d)\s?([+\-])?(?![A-Za-z0-9_])"""
     )
+
+    private val MOBILE_SENDER = Regex("""^(?:\+?98|0098|0)?9\d{9}$""")
+
+    /** A bank never texts from a mobile number; an SMS from one is never treated as a deposit. */
+    fun isPersonalSender(sender: String?): Boolean =
+        MOBILE_SENDER.matches(normalize(sender).replace(Regex("[\\s\\-]"), ""))
 
     private val CREDIT = listOf(
         "واریز", "واريز", "دریافت", "ایداع", "إيداع", "افزایش", "بستانکار", "deposit", "credit", "variz"
@@ -60,6 +68,8 @@ object SmsParser {
     )
     private val BALANCE = listOf("مانده", "موجودی", "باقیمانده", "balance", "bal")
     private val FEE = listOf("کارمزد", "wage", "fee")
+    // Marketing / link texts are never a deposit (identical to PROMO_WORDS in the bot's sms_parse.py).
+    private val PROMO = listOf("هدیه", "جایزه", "تخفیف", "قرعه", "لینک", "http", "www.")
 
     private val INVISIBLE = "\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u00a0\ufeff".toSet()
 
@@ -72,7 +82,7 @@ object SmsParser {
         BankInfo("pasargad", "بانک پاسارگاد", listOf("pasargad", "bpi", "982000888", "2000888", "500040"), listOf("پاسارگاد", "ویپاد", "wepod")),
         BankInfo("parsian", "بانک پارسیان", listOf("parsian", "pec", "98200040", "200040"), listOf("پارسیان")),
         BankInfo("saman", "بانک سامان", listOf("saman", "sb24", "9820000", "20000", "98200084210"), listOf("بانک سامان", "سامان")),
-        BankInfo("blu", "بلوبانک", listOf("blu", "blubank", "98200084210"), listOf("بلوبانک", "بلو بانک", "حساب بلو")),
+        BankInfo("blu", "بلوبانک", listOf("blu", "blubank", "98200084210"), listOf("بلوبانک", "بلو بانک", "حساب بلو", "بلو")),
         BankInfo("enbank", "بانک اقتصاد نوین", listOf("enbank", "98200050", "200050"), listOf("اقتصاد نوین", "اقتصادنوین")),
         BankInfo("keshavarzi", "بانک کشاورزی", listOf("keshavarzi", "bki", "98200090", "200090", "500022"), listOf("کشاورزی", "بانک کشاورزی")),
         BankInfo("maskan", "بانک مسکن", listOf("maskan", "98200014", "200014", "300014"), listOf("بانک مسکن", "مسکن")),
@@ -125,6 +135,7 @@ object SmsParser {
             cleaned = p.replace(cleaned) { " ".repeat(it.value.length) } // طول حفظ شود
         }
 
+        if (has(PROMO, text)) return Parsed(null, "promo")
         val creditMarked = has(CREDIT, cleaned)
         val debitMarked = has(DEBIT, cleaned)
         val credits = mutableListOf<Long>()
@@ -218,6 +229,8 @@ object SmsParser {
         "mixed_direction" -> "جهت مبهم (هم‌زمان کلمات واریز و برداشت)"
         "no_credit_amount" -> "مبلغ واریز یافت نشد"
         "several_amounts" -> "چند مبلغ متفاوت در یک پیامک (مبهم)"
+        "promo" -> "پیامک تبلیغاتی یا حاوی لینک (واریز نیست)"
+        "test_deposit_not_sent" -> "پیامک تستی؛ فقط پارس شد و به سرور ارسال نمی‌شود"
         else -> reason
     }
 }

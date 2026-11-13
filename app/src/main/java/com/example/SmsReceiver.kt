@@ -13,7 +13,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Implements Section 1 & 2 of `APP_SIDE_APPROVAL_SPEC.md`:
@@ -24,9 +23,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  * - Stores both `receivedMs = messages[0].timestampMillis` and `storedMs = System.currentTimeMillis()`.
  * - Deduplicates locally via Room unique `fingerprint` index.
  * - If `amountMinor == null` -> stores `status = IGNORED` (`+reason`).
- * - If `amountMinor != null` -> stores `status = NEW`, runs `ForwardWorker.runSweepNow` briefly
- *   within the 4.5s `goAsync()` window (preventing Android 10s Broadcast ANR), and falls back to
- *   `ForwardWorker.enqueueMatcherSweep` if still in flight.
+ * - If `amountMinor != null` -> stores `status = NEW` and wakes up `ForwardWorker.enqueueMatcherSweep`.
  */
 class SmsReceiver : BroadcastReceiver() {
 
@@ -48,19 +45,22 @@ class SmsReceiver : BroadcastReceiver() {
         val receivedAtMs = firstMsg.timestampMillis.takeIf { it > 0L } ?: System.currentTimeMillis()
         val storedAtMs = System.currentTimeMillis()
 
+        // personal mobile numbers are never banks: ignore (and do not store) those SMS entirely
+        if (SmsParser.isPersonalSender(bank)) return
+
         if (!settingsRepo.shouldProcessBank(bank, rawBody)) {
             return
         }
 
         val pendingResult = goAsync()
         val appContext = context.applicationContext
-        receiverScope.launch {
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
                 val dao = AppDatabase.getInstance(appContext).logDao()
                 val normalized = SmsParser.normalize(rawBody)
                 val fp = SmsParser.fingerprint(bank, rawBody)
 
-                // Fast local duplicate check
+                // Check local duplicate by fingerprint
                 if (dao.getByFingerprint(fp) != null) {
                     return@launch
                 }
@@ -89,26 +89,12 @@ class SmsReceiver : BroadcastReceiver() {
 
                 val rowId = dao.insertIgnoreDuplicate(record)
                 if (rowId != -1L && initialStatus == SmsStatus.NEW) {
-                    // Launch sweep in application scope so slow network doesn't get cancelled at 4.5s,
-                    // while finishing goAsync() safely before Android's ~10s Broadcast ANR limit.
-                    val sweepJob = receiverScope.launch {
-                        ForwardWorker.runSweepNow(appContext)
-                    }
-                    withTimeoutOrNull(GO_ASYNC_SWEEP_BUDGET_MS) {
-                        sweepJob.join()
-                    }
-                    if (sweepJob.isActive) {
-                        ForwardWorker.enqueueMatcherSweep(appContext)
-                    }
+                    // WorkManager, not a network call inside goAsync(): the system ends a receiver after ~10 s
+                    ForwardWorker.enqueueMatcherSweep(appContext)
                 }
             } finally {
                 pendingResult.finish()
             }
         }
-    }
-
-    companion object {
-        private const val GO_ASYNC_SWEEP_BUDGET_MS = 4_500L
-        private val receiverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
 }

@@ -222,7 +222,8 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
 
             val parsed = SmsParser.parse(rawBody)
             val detected = SmsParser.detectBank(bank, rawBody)
-            val initialStatus = if (parsed.amountMinor == null) SmsStatus.IGNORED else SmsStatus.NEW
+            // a simulated SMS is only parsed and shown: it must never be sent to the server (it could approve a real order)
+            val initialStatus = SmsStatus.IGNORED
 
             val record = SmsRecord(
                 fingerprint = fp,
@@ -231,21 +232,20 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                 body = rawBody,
                 normalized = normalized,
                 amountMinor = parsed.amountMinor,
-                reason = parsed.reason,
+                reason = if (parsed.amountMinor != null) "test_deposit_not_sent" else parsed.reason,
                 status = initialStatus.name,
                 receivedMs = now,
                 storedMs = now,
-                decidedMs = if (initialStatus == SmsStatus.IGNORED) now else null
+                decidedMs = now
             )
 
             val id = logDao.insertIgnoreDuplicate(record)
             if (id == -1L) {
                 _snackbarMessage.value = "پیامک تکراری نادیده گرفته شد."
-            } else if (initialStatus == SmsStatus.IGNORED) {
-                _snackbarMessage.value = "پیامک غیر واریزی تشخیص داده شد (status=IGNORED, reason=${parsed.reason})."
+            } else if (parsed.amountMinor == null) {
+                _snackbarMessage.value = "پیامک غیر واریزی تشخیص داده شد (reason=${parsed.reason})."
             } else {
-                _snackbarMessage.value = "واریز معتبر ثبت شد (status=NEW)؛ در حال تطبیق با سفارش‌های منتظر..."
-                ForwardWorker.runSweepNow(appContext)
+                _snackbarMessage.value = "پارس شد: ${SmsParser.formatToman(parsed.amountMinor)} تومان (تست؛ به سرور ارسال نمی‌شود)."
             }
         }
     }
@@ -285,7 +285,7 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
 
     fun retrySingleLog(entry: SmsRecord) {
         viewModelScope.launch {
-            val nextStatus = if (entry.amountMinor != null) SmsStatus.NEW else SmsStatus.IGNORED
+            val nextStatus = if (entry.amountMinor != null && entry.reason != "test_deposit_not_sent") SmsStatus.NEW else SmsStatus.IGNORED
             logDao.update(
                 entry.copy(
                     status = nextStatus.name,

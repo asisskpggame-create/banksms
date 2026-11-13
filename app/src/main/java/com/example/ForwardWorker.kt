@@ -196,8 +196,12 @@ class ForwardWorker(
 
             // Re-read active deposits after expiration
             val freshDeposits = dao.getActiveDepositsForMatching()
-            if (freshDeposits.isEmpty() || pendingSuccess.items.isEmpty()) {
+            if (freshDeposits.isEmpty()) {
                 return@withLock WorkOutcome.SUCCESS
+            }
+            if (pendingSuccess.items.isEmpty()) {
+                // nothing waiting yet: the customer may still send the receipt -> look again later (backoff retry)
+                return@withLock if (freshDeposits.any { it.statusEnum == SmsStatus.NEW }) WorkOutcome.RETRY else WorkOutcome.SUCCESS
             }
 
             val byId = freshDeposits.associateBy { it.id }
@@ -283,7 +287,9 @@ class ForwardWorker(
                 }
             }
 
-            if (shouldRetryAny) WorkOutcome.RETRY else WorkOutcome.SUCCESS
+            // deposits that matched nothing yet stay NEW until `match_window_hours` expires them: keep checking
+            val stillWaiting = dao.getActiveDepositsForMatching().any { it.statusEnum == SmsStatus.NEW }
+            if (shouldRetryAny || stillWaiting) WorkOutcome.RETRY else WorkOutcome.SUCCESS
         }
 
         private suspend fun executeManualApproveLocked(
