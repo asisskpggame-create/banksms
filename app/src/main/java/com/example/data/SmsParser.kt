@@ -28,7 +28,8 @@ data class ParsedSms(
 
 /**
  * Exact Kotlin port of `reference/sms_parse.py` per Section 3 of `APP_SIDE_APPROVAL_SPEC.md`.
- * Uses `(?U)` (UNICODE_CHARACTER_CLASS) so `\w` and `\s` behave identically to Python 3 regex.
+ * Uses Unicode character classes `[\p{L}\p{N}_]` instead of `(?U)\w` so it works identically
+ * on both Android ART's ICU regex engine (which rejects `(?U)`) and desktop JVM JUnit tests.
  */
 object SmsParser {
 
@@ -36,20 +37,19 @@ object SmsParser {
     const val MAX_SMS_LENGTH = 4000
     private const val MAX_TEXT = 2000
 
-    // (?U) = UNICODE_CHARACTER_CLASS so \w and \s recognize Persian/Arabic letters like Python 3
-    private fun rx(p: String) = Regex("(?U)$p")
-
     private val NOISE = listOf(
-        rx("""\b\d{2,4}[/\-.]\d{1,2}[/\-.]\d{1,4}\b"""),                 // تاریخ
-        rx("""\b\d{1,2}:\d{2}(?::\d{2})?\b"""),                           // ساعت
-        rx("""\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b"""),          // کارت ۱۶ رقمی
-        rx("""\d{4,6}\s?[*xX•#]{2,}\s?\d{2,4}"""),                        // 603799******1234
-        rx("""[*xX•#]{2,}\s?\d{2,6}"""),                                  // ***1234
-        rx("""(?:\+98|0098|98)?9\d{9}\b"""),                              // موبایل
-        rx("""\b0\d{8,}\b""")                                             // شمارهٔ حساب
+        Regex("""(?<![\p{L}\p{N}_])\d{2,4}[/\-.]\d{1,2}[/\-.]\d{1,4}(?![\p{L}\p{N}_])"""), // تاریخ
+        Regex("""(?<![\p{L}\p{N}_])\d{1,2}:\d{2}(?::\d{2})?(?![\p{L}\p{N}_])"""),           // ساعت
+        Regex("""(?<![\p{L}\p{N}_])\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}(?![\p{L}\p{N}_])"""), // کارت ۱۶ رقمی
+        Regex("""\d{4,6}\s?[*xX•#]{2,}\s?\d{2,4}"""),                                        // 603799******1234
+        Regex("""[*xX•#]{2,}\s?\d{2,6}"""),                                                  // ***1234
+        Regex("""(?:\+98|0098|98)?9\d{9}(?![\p{L}\p{N}_])"""),                               // موبایل
+        Regex("""(?<![\p{L}\p{N}_])0\d{8,}(?![\p{L}\p{N}_])""")                              // شمارهٔ حساب
     )
 
-    private val NUM = rx("""(?<![\w.])([+\-])?\s?(\d{1,3}(?:,\d{3})+|[1-9]\d{3,11})(?!\d)\s?([+\-])?(?![\w])""")
+    private val NUM = Regex(
+        """(?<![\p{L}\p{N}_.])([+\-])?\s?(\d{1,3}(?:,\d{3})+|[1-9]\d{3,11})(?!\d)\s?([+\-])?(?![\p{L}\p{N}_])"""
+    )
 
     private val CREDIT = listOf(
         "واریز", "واريز", "دریافت", "ایداع", "إيداع", "افزایش", "بستانکار", "deposit", "credit", "variz"

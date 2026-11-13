@@ -77,27 +77,31 @@ class SettingsRepo private constructor(context: Context) {
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             appContext.getSharedPreferences("${PREFS_FILE_NAME}_fallback", Context.MODE_PRIVATE)
         }
     }
 
     fun readSettings(): GatewaySettings {
         val defaultBanks = SmsParser.KNOWN_BANKS.map { it.code }.toSet()
-        val savedBanks = prefs.getStringSet(KEY_SELECTED_BANKS, null) ?: defaultBanks
-        return GatewaySettings(
-            endpointUrl = prefs.getString(KEY_ENDPOINT_URL, "") ?: "",
-            gatewayToken = prefs.getString(KEY_GATEWAY_TOKEN, "") ?: "",
-            serviceEnabled = prefs.getBoolean(KEY_SERVICE_ENABLED, true),
-            autoApproveInApp = prefs.getBoolean(KEY_AUTO_APPROVE_IN_APP, false),
-            localMaxToman = prefs.getLong(KEY_LOCAL_MAX_TOMAN, 0L),
-            filterBanksEnabled = prefs.getBoolean(KEY_FILTER_BANKS_ENABLED, false),
-            selectedBankCodes = savedBanks,
-            lastTokenError = prefs.getString(KEY_LAST_TOKEN_ERROR, null),
-            lastClockOffsetMs = prefs.getLong(KEY_LAST_CLOCK_OFFSET_MS, 0L),
-            lastServerWindowHours = prefs.getInt(KEY_LAST_SERVER_WINDOW_HOURS, 24),
-            lastServerMaxToman = prefs.getLong(KEY_LAST_SERVER_MAX_TOMAN, 0L)
-        )
+        return try {
+            val savedBanks = prefs.getStringSet(KEY_SELECTED_BANKS, null) ?: defaultBanks
+            GatewaySettings(
+                endpointUrl = prefs.getString(KEY_ENDPOINT_URL, "") ?: "",
+                gatewayToken = prefs.getString(KEY_GATEWAY_TOKEN, "") ?: "",
+                serviceEnabled = prefs.getBoolean(KEY_SERVICE_ENABLED, true),
+                autoApproveInApp = prefs.getBoolean(KEY_AUTO_APPROVE_IN_APP, false),
+                localMaxToman = prefs.getLong(KEY_LOCAL_MAX_TOMAN, 0L),
+                filterBanksEnabled = prefs.getBoolean(KEY_FILTER_BANKS_ENABLED, false),
+                selectedBankCodes = savedBanks,
+                lastTokenError = prefs.getString(KEY_LAST_TOKEN_ERROR, null),
+                lastClockOffsetMs = prefs.getLong(KEY_LAST_CLOCK_OFFSET_MS, 0L),
+                lastServerWindowHours = prefs.getInt(KEY_LAST_SERVER_WINDOW_HOURS, 24),
+                lastServerMaxToman = prefs.getLong(KEY_LAST_SERVER_MAX_TOMAN, 0L)
+            )
+        } catch (_: Throwable) {
+            GatewaySettings(selectedBankCodes = defaultBanks)
+        }
     }
 
     fun saveEndpointAndToken(endpointUrl: String, token: String, localMaxToman: Long = readSettings().localMaxToman) {

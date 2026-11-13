@@ -26,6 +26,7 @@ abstract class AppDatabase : RoomDatabase() {
                     "asis_panel_logs.db"
                 )
                     .fallbackToDestructiveMigration(true)
+                    .fallbackToDestructiveMigrationOnDowngrade(true)
                     .build()
                     .also { INSTANCE = it }
             }
