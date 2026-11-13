@@ -134,6 +134,8 @@ jobs:
           with open("gradle.properties", "r", encoding="utf-8") as f:
               gprops = f.read()
           gprops = gprops.replace("org.gradle.configuration-cache=true", "org.gradle.configuration-cache=false")
+          if "android.useAndroidX=true" not in gprops:
+              gprops += "\nandroid.useAndroidX=true\n"
           with open("gradle.properties", "w", encoding="utf-8") as f:
               f.write(gprops)
 
