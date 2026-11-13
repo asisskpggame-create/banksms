@@ -54,6 +54,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -826,6 +827,8 @@ private fun SimulateBankSmsDialog(
 
 @Composable
 fun rememberFormattedTime(timestampMs: Long): String {
-    val sdf = SimpleDateFormat("yyyy/MM/dd - HH:mm:ss", Locale.US)
-    return sdf.format(Date(timestampMs))
+    return remember(timestampMs) {
+        val sdf = SimpleDateFormat("yyyy/MM/dd - HH:mm:ss", Locale.US)
+        sdf.format(Date(timestampMs))
+    }
 }

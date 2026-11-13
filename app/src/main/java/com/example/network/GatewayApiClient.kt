@@ -88,7 +88,7 @@ object GatewayApiClient {
         '\u2066', '\u2067', '\u2068', '\u2069', '\u00a0', '\ufeff'
     )
 
-    private val okHttpClient: OkHttpClient by lazy {
+    private val defaultOkHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)
@@ -96,6 +96,11 @@ object GatewayApiClient {
             .retryOnConnectionFailure(true)
             .build()
     }
+
+    @Volatile
+    internal var testClientOverride: OkHttpClient? = null
+
+    private fun client(): OkHttpClient = testClientOverride ?: defaultOkHttpClient
 
     /** Strips invisible directional marks (e.g. when copy-pasted from Telegram) and whitespace. */
     fun cleanCredentialString(raw: String?): String {
@@ -175,7 +180,7 @@ object GatewayApiClient {
     }
 
     /**
-     * `GET /<PANEL_PATH>/sms-pending?token=...` (plus `X-Token` header)
+     * `GET /<PANEL_PATH>/sms-pending` (token sent via `X-Token` header)
      * Returns waiting orders/top-ups and `server_now_ms` to compute clock offset.
      */
     suspend fun fetchPendingItems(
@@ -190,9 +195,6 @@ object GatewayApiClient {
         val cleanToken = cleanCredentialString(token)
         val rawUrl = buildPendingUrl(endpointUrl)
         val httpUrl = rawUrl.toHttpUrlOrNull()
-            ?.newBuilder()
-            ?.addQueryParameter("token", cleanToken)
-            ?.build()
             ?: return@withContext PendingFetchResult.PermanentError(null, "فرمت آدرس سرور نامعتبر است.")
 
         val request = Request.Builder()
@@ -204,7 +206,7 @@ object GatewayApiClient {
 
         try {
             val phoneBeforeMs = System.currentTimeMillis()
-            okHttpClient.newCall(request).execute().use { response ->
+            client().newCall(request).execute().use { response ->
                 val phoneAfterMs = System.currentTimeMillis()
                 val phoneMidpointMs = (phoneBeforeMs + phoneAfterMs) / 2L
                 val code = response.code
@@ -334,7 +336,7 @@ object GatewayApiClient {
         }
 
         try {
-            okHttpClient.newCall(request).execute().use { response ->
+            client().newCall(request).execute().use { response ->
                 val code = response.code
                 val rawBody = response.body?.string().orEmpty()
                 val json = runCatching { JSONObject(rawBody) }.getOrNull()
@@ -432,6 +434,7 @@ object GatewayApiClient {
                 .url(finalUrl)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
+                .header("X-Token", cleanToken)
                 .post(payloadJson.toRequestBody(JSON_MEDIA_TYPE))
                 .build()
         } catch (e: IllegalArgumentException) {
@@ -443,7 +446,7 @@ object GatewayApiClient {
         }
 
         try {
-            okHttpClient.newCall(request).execute().use { response ->
+            client().newCall(request).execute().use { response ->
                 val code = response.code
                 val rawBody = response.body?.string().orEmpty()
                 val json = runCatching { JSONObject(rawBody) }.getOrNull()

@@ -1,21 +1,24 @@
 package com.example
 
 import com.example.data.Deposit
+import com.example.data.GatewaySettings
 import com.example.data.Item
 import com.example.data.Matcher
 import com.example.data.Parsed
 import com.example.data.SmsParser
 import com.example.network.GatewayApiClient
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 class ExampleUnitTest {
 
     /**
-     * Section 3 & 9 Requirement:
      * Parity test running 32 diverse bank SMS samples through `SmsParser.kt` and verifying
      * 100% identical `(amountMinor, reason)` output with Python's `reference/sms_parse.py`.
      */
@@ -77,6 +80,19 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun matcher_filtersDepositsOlderThanOrderAndPairsRemainingChronologically() {
+        val staleDeposit = Deposit(id = 1L, amountMinor = 1_000_000L, at = 1000L)
+        val validDeposit = Deposit(id = 2L, amountMinor = 1_000_000L, at = 5000L)
+        val topup = Item(kind = "topup", publicId = "TOP55", dueMinor = 1_000_000L, at = 3000L)
+
+        val (pairs, ambiguous) = Matcher.plan(listOf(validDeposit, staleDeposit), listOf(topup))
+        assertEquals(1, pairs.size)
+        assertEquals(2L, pairs[0].first.id)
+        assertEquals("TOP55", pairs[0].second.publicId)
+        assertTrue(ambiguous.isEmpty())
+    }
+
+    @Test
     fun matcher_oneDepositTwoOrdersWithSameAmount_marksAmbiguousAndApprovesNothing() {
         val dep = Deposit(id = 11L, amountMinor = 5_000_000L, at = 3000L)
         val ord1 = Item(kind = "order", publicId = "ORD1", dueMinor = 5_000_000L, at = 1000L)
@@ -86,6 +102,22 @@ class ExampleUnitTest {
         assertTrue(pairs.isEmpty())
         assertEquals(1, ambiguous.size)
         assertEquals(dep, ambiguous[0])
+    }
+
+    @Test
+    fun matcher_twoDepositsTwoOrdersWithSameAmount_pairsOldestFirst() {
+        val d1 = Deposit(id = 1L, amountMinor = 2_000_000L, at = 4000L)
+        val d2 = Deposit(id = 2L, amountMinor = 2_000_000L, at = 2500L)
+        val o1 = Item(kind = "order", publicId = "ORD_NEW", dueMinor = 2_000_000L, at = 3000L)
+        val o2 = Item(kind = "order", publicId = "ORD_OLD", dueMinor = 2_000_000L, at = 2000L)
+
+        val (pairs, ambiguous) = Matcher.plan(listOf(d1, d2), listOf(o1, o2))
+        assertEquals(2, pairs.size)
+        assertEquals(2L, pairs[0].first.id)
+        assertEquals("ORD_OLD", pairs[0].second.publicId)
+        assertEquals(1L, pairs[1].first.id)
+        assertEquals("ORD_NEW", pairs[1].second.publicId)
+        assertTrue(ambiguous.isEmpty())
     }
 
     @Test
@@ -109,29 +141,34 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun hmacSignature_isDeterministicAndValidHex() {
-        val sig1 = GatewayApiClient.computeApprovalHmac(
-            token = "my_secret_gateway_token_123456",
-            kind = "order",
-            publicId = "ORD123",
-            fingerprint = "abcd1234",
-            amountMinor = 5_000_070L,
-            ts = 1780000001000L
-        )
-        val sig2 = GatewayApiClient.computeApprovalHmac(
-            token = "my_secret_gateway_token_123456",
-            kind = "order",
-            publicId = "ORD123",
-            fingerprint = "abcd1234",
-            amountMinor = 5_000_070L,
-            ts = 1780000001000L
-        )
-        assertEquals(sig1, sig2)
-        assertEquals(64, sig1.length)
+    fun detectBank_recognizesSenderAndBodyKeywords() {
+        assertEquals("mellat", SmsParser.detectBank("98200033", "واریز").code)
+        assertEquals("blu", SmsParser.detectBank("unknown", "حساب بلو شما 500,000 ریال شارژ شد").code)
+        assertEquals("test", SmsParser.parseFull("تست اتصال", "98200033").reason)
     }
 
     @Test
-    fun gatewayValidation_enforcesHttpsAndMin20CharToken() {
+    fun hmacSignature_matchesStandardRfc2104HmacSha256() {
+        val token = "my_secret_gateway_token_123456"
+        val sig = GatewayApiClient.computeApprovalHmac(
+            token = "\u200F$token\u200C",
+            kind = "order",
+            publicId = "ORD123",
+            fingerprint = "abcd1234",
+            amountMinor = 5_000_070L,
+            ts = 1780000001000L
+        )
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(token.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+        val expected = mac.doFinal("order|ORD123|abcd1234|5000070|1780000001000".toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+
+        assertEquals(expected, sig)
+        assertEquals(64, sig.length)
+    }
+
+    @Test
+    fun gatewayValidation_andTokenRedaction_enforceSecurityRules() {
         assertNotNull(
             GatewayApiClient.validateInputConfig(
                 "http://example.com/panel",
@@ -146,8 +183,8 @@ class ExampleUnitTest {
         )
         assertNull(
             GatewayApiClient.validateInputConfig(
-                "https://example.com/panel",
-                "valid_secret_token_at_least_20_chars"
+                "\u200Fhttps://example.com/panel\u200E",
+                "\u200Bvalid_secret_token_at_least_20_chars\u200C"
             )
         )
         assertEquals(
@@ -158,5 +195,13 @@ class ExampleUnitTest {
             "https://example.com/panel/sms-approve",
             GatewayApiClient.buildApproveUrl("https://example.com/panel/sms-in/")
         )
+
+        val secretToken = "super_sensitive_token_9988776655"
+        val settings = GatewaySettings(
+            endpointUrl = "https://example.com/panel",
+            gatewayToken = secretToken
+        )
+        assertFalse("toString() must redact secret token", settings.toString().contains(secretToken))
+        assertTrue(settings.toString().contains("***"))
     }
 }

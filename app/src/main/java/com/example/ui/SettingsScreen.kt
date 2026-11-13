@@ -85,9 +85,10 @@ fun SettingsScreen(
         }
     }
 
-    val isHttpInsecure = endpointInput.trim().startsWith("http://", ignoreCase = true)
+    val cleanEndpointPreview = GatewayApiClient.cleanCredentialString(endpointInput)
+    val isHttpInsecure = cleanEndpointPreview.startsWith("http://", ignoreCase = true)
     val basePanelPreview = GatewayApiClient.extractBasePanelUrl(endpointInput)
-    val tokenLen = tokenInput.trim().length
+    val tokenLen = GatewayApiClient.cleanCredentialString(tokenInput).length
 
     Column(
         modifier = modifier
@@ -96,6 +97,36 @@ fun SettingsScreen(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        if (!settings.isEncryptedStorage) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("unencrypted_storage_warning_card"),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer
+                ),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ErrorOutline,
+                        contentDescription = "هشدار رمزنگاری",
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                    Text(
+                        text = "هشدار امنیتی: Android Keystore در این دستگاه در دسترس نبود؛ حافظهٔ جایگزین خصوصی برنامه استفاده شده است.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+        }
         // App-Side Approval Controls Card (Section 7 of APP_SIDE_APPROVAL_SPEC.md)
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -520,7 +551,7 @@ fun SettingsScreen(
                     modifier = Modifier.size(24.dp)
                 )
                 Text(
-                    text = "امضای درخواست‌های تأیید: sig = HMAC_SHA256(token, kind|public_id|fingerprint|amount_minor|ts). توکن هرگز داخل APK هاردکد نشده و با EncryptedSharedPreferences محافظت می‌شود.",
+                    text = "امضای درخواست‌های تأیید: sig = HMAC_SHA256(token, kind|public_id|fingerprint|amount_minor|ts). توکن فقط از طریق هدر امن X-Token و بدنهٔ TLS ارسال می‌شود، هرگز داخل APK هاردکد نشده و با EncryptedSharedPreferences محافظت می‌گردد.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

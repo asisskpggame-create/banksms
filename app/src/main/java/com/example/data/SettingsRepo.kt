@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.example.network.GatewayApiClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,7 +20,8 @@ data class GatewaySettings(
     val lastTokenError: String? = null,
     val lastClockOffsetMs: Long = 0L,
     val lastServerWindowHours: Int = 24,
-    val lastServerMaxToman: Long = 0L
+    val lastServerMaxToman: Long = 0L,
+    val isEncryptedStorage: Boolean = true
 ) {
     val isConfigured: Boolean
         get() = endpointUrl.startsWith("https://", ignoreCase = true) && gatewayToken.trim().length >= 20
@@ -30,7 +32,7 @@ data class GatewaySettings(
      */
     val basePanelUrl: String
         get() {
-            var trimmed = endpointUrl.trim().trimEnd('/')
+            var trimmed = GatewayApiClient.cleanCredentialString(endpointUrl).trimEnd('/')
             if (trimmed.isEmpty()) return ""
             for (suffix in listOf("/sms-in", "/sms-pending", "/sms-approve")) {
                 if (trimmed.endsWith(suffix, ignoreCase = true)) {
@@ -52,6 +54,12 @@ data class GatewaySettings(
     /** Effective max Toman ceiling (local override if > 0, else server's `auto_max_toman`). */
     val effectiveMaxToman: Long
         get() = if (localMaxToman > 0L) localMaxToman else lastServerMaxToman
+
+    /** Redacts secret token from logs/crash dumps. */
+    override fun toString(): String =
+        "GatewaySettings(endpointUrl='$basePanelUrl', gatewayToken='***(${gatewayToken.length} chars)', " +
+            "serviceEnabled=$serviceEnabled, autoApproveInApp=$autoApproveInApp, " +
+            "localMaxToman=$localMaxToman, isEncryptedStorage=$isEncryptedStorage)"
 }
 
 /**
@@ -60,25 +68,45 @@ data class GatewaySettings(
  */
 class SettingsRepo private constructor(context: Context) {
 
+    private var encryptedStorageActive: Boolean = true
     private val prefs: SharedPreferences = createSecurePrefs(context.applicationContext)
 
     private val _settingsFlow = MutableStateFlow(readSettings())
     val settingsFlow: StateFlow<GatewaySettings> = _settingsFlow.asStateFlow()
 
+    private fun createEncryptedPrefsInstance(appContext: Context): SharedPreferences {
+        val masterKey = MasterKey.Builder(appContext)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        return EncryptedSharedPreferences.create(
+            appContext,
+            PREFS_FILE_NAME,
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    }
+
     private fun createSecurePrefs(appContext: Context): SharedPreferences {
-        return try {
-            val masterKey = MasterKey.Builder(appContext)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            EncryptedSharedPreferences.create(
-                appContext,
-                PREFS_FILE_NAME,
-                masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            )
+        // 1. Primary attempt with EncryptedSharedPreferences
+        try {
+            val enc = createEncryptedPrefsInstance(appContext)
+            encryptedStorageActive = true
+            runCatching { appContext.deleteSharedPreferences("${PREFS_FILE_NAME}_fallback") }
+            return enc
         } catch (_: Throwable) {
-            appContext.getSharedPreferences("${PREFS_FILE_NAME}_fallback", Context.MODE_PRIVATE)
+            // 2. Recover from corrupted keyset XML (e.g. OS backup/restore) and retry encrypted storage
+            runCatching { appContext.deleteSharedPreferences(PREFS_FILE_NAME) }
+            try {
+                val enc = createEncryptedPrefsInstance(appContext)
+                encryptedStorageActive = true
+                runCatching { appContext.deleteSharedPreferences("${PREFS_FILE_NAME}_fallback") }
+                return enc
+            } catch (_: Throwable) {
+                // 3. Hardware Keystore unavailable (e.g. JVM Robolectric or broken ROM keystore)
+                encryptedStorageActive = false
+                return appContext.getSharedPreferences("${PREFS_FILE_NAME}_fallback", Context.MODE_PRIVATE)
+            }
         }
     }
 
@@ -97,16 +125,20 @@ class SettingsRepo private constructor(context: Context) {
                 lastTokenError = prefs.getString(KEY_LAST_TOKEN_ERROR, null),
                 lastClockOffsetMs = prefs.getLong(KEY_LAST_CLOCK_OFFSET_MS, 0L),
                 lastServerWindowHours = prefs.getInt(KEY_LAST_SERVER_WINDOW_HOURS, 24),
-                lastServerMaxToman = prefs.getLong(KEY_LAST_SERVER_MAX_TOMAN, 0L)
+                lastServerMaxToman = prefs.getLong(KEY_LAST_SERVER_MAX_TOMAN, 0L),
+                isEncryptedStorage = encryptedStorageActive
             )
         } catch (_: Throwable) {
-            GatewaySettings(selectedBankCodes = defaultBanks)
+            GatewaySettings(
+                selectedBankCodes = defaultBanks,
+                isEncryptedStorage = encryptedStorageActive
+            )
         }
     }
 
     fun saveEndpointAndToken(endpointUrl: String, token: String, localMaxToman: Long = readSettings().localMaxToman) {
-        val cleanUrl = com.example.network.GatewayApiClient.cleanCredentialString(endpointUrl)
-        val cleanToken = com.example.network.GatewayApiClient.cleanCredentialString(token)
+        val cleanUrl = GatewayApiClient.cleanCredentialString(endpointUrl)
+        val cleanToken = GatewayApiClient.cleanCredentialString(token)
         prefs.edit()
             .putString(KEY_ENDPOINT_URL, cleanUrl)
             .putString(KEY_GATEWAY_TOKEN, cleanToken)

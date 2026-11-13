@@ -445,7 +445,10 @@ private fun SmsRecordCard(
                 )
 
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (entry.amountMinor != null && entry.statusEnum != SmsStatus.MATCHED) {
+                    if (entry.amountMinor != null &&
+                        entry.statusEnum != SmsStatus.MATCHED &&
+                        entry.statusEnum != SmsStatus.CLAIMED
+                    ) {
                         if (!entry.matchedId.isNullOrBlank()) {
                             Button(
                                 onClick = onDirectApprove,

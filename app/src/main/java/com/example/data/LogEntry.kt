@@ -49,6 +49,10 @@ data class SmsRecord(
 
     fun matchedLabelFa(): String? {
         val id = matchedId ?: return null
-        return if (matchedKind == "topup") "شارژ کیف پول $id" else "سفارش $id"
+        return when (matchedKind) {
+            "topup" -> "شارژ کیف پول $id"
+            "sms-in" -> "ارسال مستقیم (/sms-in): $id"
+            else -> "سفارش $id"
+        }
     }
 }
