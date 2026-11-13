@@ -7,34 +7,25 @@ import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.example.data.AppDatabase
 import com.example.data.Deposit
-import com.example.data.Item
 import com.example.data.Matcher
 import com.example.data.SettingsRepo
 import com.example.data.SmsRecord
 import com.example.data.SmsStatus
 import com.example.network.ApproveResult
 import com.example.network.GatewayApiClient
+import com.example.network.GatewayResult
 import com.example.network.PendingFetchResult
 import com.example.util.NotificationHelper
 import java.util.concurrent.TimeUnit
 
 /**
- * Implements `MatcherWorker` from Section 1, 4, 5, 6, 7, 8 of `APP_SIDE_APPROVAL_SPEC.md`:
- * 1. Cleans up records older than 30 days (`KEEP_DAYS = 30`).
- * 2. Fetches waiting orders/top-ups via `GET /sms-pending` and calculates server clock offset.
- * 3. Expires `NEW` deposits older than `match_window_hours`.
- * 4. Runs `Matcher.plan(deposits, items)` locally on device.
- * 5. Handles `AMBIGUOUS` (multiple orders with same amount -> no auto-approve + notification).
- * 6. For matched pairs:
- *    - If `autoApproveInApp` is ON and within Toman ceiling (or user explicitly tapped manual approve):
- *      claims record (`CLAIMED`) and calls `POST /sms-approve` with HMAC-SHA256 signature.
- *    - Otherwise marks `MANUAL` with matched order ID and notifies user for one-tap approval in app.
+ * Implements `MatcherWorker` (`APP_SIDE_APPROVAL_SPEC.md`) with automatic fallback to
+ * classic `POST /<PANEL_PATH>/sms-in` (`API_CONTRACT.md`) if the server does not have `/sms-pending` yet.
  */
 class ForwardWorker(
     appContext: Context,
@@ -42,6 +33,14 @@ class ForwardWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
+        return try {
+            executeWorkInternal()
+        } catch (_: Throwable) {
+            Result.retry()
+        }
+    }
+
+    private suspend fun executeWorkInternal(): Result {
         val db = AppDatabase.getInstance(applicationContext)
         val dao = db.logDao()
         val settingsRepo = SettingsRepo.getInstance(applicationContext)
@@ -82,6 +81,12 @@ class ForwardWorker(
 
         val pendingSuccess = when (pendingResult) {
             is PendingFetchResult.Success -> pendingResult
+
+            is PendingFetchResult.NotFound404FallbackToSmsIn -> {
+                // Server is running classic `/sms-in` without `/sms-pending` -> forward directly to `POST /sms-in`!
+                return forwardDirectlyViaSmsIn(activeDeposits, dao, settingsRepo)
+            }
+
             is PendingFetchResult.Unauthorized401 -> {
                 settingsRepo.recordTokenError(pendingResult.message)
                 NotificationHelper.notifyTokenError(applicationContext, pendingResult.message)
@@ -96,6 +101,7 @@ class ForwardWorker(
                 }
                 return Result.failure()
             }
+
             is PendingFetchResult.PermanentError -> {
                 for (rec in activeDeposits) {
                     dao.update(
@@ -108,6 +114,7 @@ class ForwardWorker(
                 }
                 return Result.failure()
             }
+
             is PendingFetchResult.RetryableError -> {
                 for (rec in activeDeposits) {
                     dao.update(
@@ -149,7 +156,7 @@ class ForwardWorker(
             Deposit(
                 id = rec.id,
                 amountMinor = amt,
-                at = rec.receivedMs + clockOffsetMs // depositAtServerTime = receivedAtMs + offset
+                at = rec.receivedMs + clockOffsetMs
             )
         }
 
@@ -228,6 +235,74 @@ class ForwardWorker(
         return if (shouldRetryAny) Result.retry() else Result.success()
     }
 
+    /**
+     * Automatic fallback to `POST /<PANEL_PATH>/sms-in` when the server only implements
+     * the classic `sms_in.py` endpoint and returns 404 on `/sms-pending`.
+     */
+    private suspend fun forwardDirectlyViaSmsIn(
+        deposits: List<SmsRecord>,
+        dao: com.example.data.LogDao,
+        settingsRepo: SettingsRepo
+    ): Result {
+        val settings = settingsRepo.readSettings()
+        var shouldRetry = false
+
+        for (entry in deposits) {
+            val res = GatewayApiClient.sendSms(
+                endpointUrl = settings.endpointUrl,
+                token = settings.gatewayToken,
+                smsText = entry.body,
+                bankCode = entry.bank
+            )
+            val nowMs = System.currentTimeMillis()
+            when (res) {
+                is GatewayResult.Success -> {
+                    dao.update(
+                        entry.copy(
+                            status = SmsStatus.MATCHED.name,
+                            httpCode = res.httpCode,
+                            matchedKind = "sms-in",
+                            matchedId = "${res.status} (approved=${res.approved})",
+                            decidedMs = nowMs,
+                            lastError = null
+                        )
+                    )
+                    settingsRepo.recordTokenError(null)
+                }
+
+                is GatewayResult.PermanentFailure -> {
+                    dao.update(
+                        entry.copy(
+                            status = SmsStatus.FAILED.name,
+                            httpCode = res.httpCode,
+                            decidedMs = nowMs,
+                            lastError = res.message
+                        )
+                    )
+                    if (res.isTokenError) {
+                        settingsRepo.recordTokenError(res.message)
+                        NotificationHelper.notifyTokenError(applicationContext, res.message)
+                        return Result.failure()
+                    }
+                }
+
+                is GatewayResult.RetryableFailure -> {
+                    dao.update(
+                        entry.copy(
+                            status = SmsStatus.RETRY.name,
+                            httpCode = res.httpCode,
+                            attempts = entry.attempts + 1,
+                            lastError = res.message
+                        )
+                    )
+                    shouldRetry = true
+                    if (res.httpCode == 429) break
+                }
+            }
+        }
+        return if (shouldRetry) Result.retry() else Result.success()
+    }
+
     private suspend fun executeManualApprove(
         recordId: Long,
         dao: com.example.data.LogDao,
@@ -247,7 +322,6 @@ class ForwardWorker(
         val kind = rec.matchedKind ?: "order"
         val publicId = rec.matchedId
         if (publicId.isNullOrBlank()) {
-            // If no matchedId yet, run the full matcher sweep first
             return Result.success()
         }
 
@@ -279,7 +353,6 @@ class ForwardWorker(
         val amountMinor = rec.amountMinor ?: return ApprovalStepOutcome.DONE
         val settings = settingsRepo.readSettings()
 
-        // Claim-first safety (Section 6): transition to CLAIMED before network request
         val claimedRows = dao.claimForApproval(rec.id, itemKind, itemPublicId)
         if (claimedRows == 0 && rec.statusEnum != SmsStatus.CLAIMED) {
             return ApprovalStepOutcome.DONE
@@ -320,7 +393,6 @@ class ForwardWorker(
             }
 
             is ApproveResult.Conflict409 -> {
-                // Server safety lock rejected approval (409) -> mark MANUAL, notify user, do NOT retry
                 val updated = currentBeforeCall.copy(
                     status = SmsStatus.MANUAL.name,
                     matchedKind = itemKind,
@@ -355,7 +427,6 @@ class ForwardWorker(
             }
 
             is ApproveResult.RetryableError -> {
-                // Revert CLAIMED back to RETRY on temporary error (Section 6)
                 dao.update(
                     currentBeforeCall.copy(
                         status = SmsStatus.RETRY.name,
@@ -381,42 +452,44 @@ class ForwardWorker(
                 .build()
 
         fun enqueueMatcherSweep(context: Context) {
-            val request = OneTimeWorkRequestBuilder<ForwardWorker>()
-                .setConstraints(networkConstraints())
-                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                .setBackoffCriteria(
-                    BackoffPolicy.EXPONENTIAL,
-                    30L,
-                    TimeUnit.SECONDS
-                )
-                .addTag(UNIQUE_SWEEP_WORK_NAME)
-                .build()
+            runCatching {
+                val request = OneTimeWorkRequestBuilder<ForwardWorker>()
+                    .setConstraints(networkConstraints())
+                    .setBackoffCriteria(
+                        BackoffPolicy.EXPONENTIAL,
+                        30L,
+                        TimeUnit.SECONDS
+                    )
+                    .addTag(UNIQUE_SWEEP_WORK_NAME)
+                    .build()
 
-            WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-                UNIQUE_SWEEP_WORK_NAME,
-                ExistingWorkPolicy.REPLACE,
-                request
-            )
+                WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+                    UNIQUE_SWEEP_WORK_NAME,
+                    ExistingWorkPolicy.REPLACE,
+                    request
+                )
+            }
         }
 
         fun enqueueManualApprove(context: Context, recordId: Long) {
-            val request = OneTimeWorkRequestBuilder<ForwardWorker>()
-                .setConstraints(networkConstraints())
-                .setInputData(workDataOf(KEY_MANUAL_APPROVE_ID to recordId))
-                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                .setBackoffCriteria(
-                    BackoffPolicy.EXPONENTIAL,
-                    30L,
-                    TimeUnit.SECONDS
-                )
-                .addTag("asis_manual_approve_$recordId")
-                .build()
+            runCatching {
+                val request = OneTimeWorkRequestBuilder<ForwardWorker>()
+                    .setConstraints(networkConstraints())
+                    .setInputData(workDataOf(KEY_MANUAL_APPROVE_ID to recordId))
+                    .setBackoffCriteria(
+                        BackoffPolicy.EXPONENTIAL,
+                        30L,
+                        TimeUnit.SECONDS
+                    )
+                    .addTag("asis_manual_approve_$recordId")
+                    .build()
 
-            WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-                "asis_manual_approve_$recordId",
-                ExistingWorkPolicy.REPLACE,
-                request
-            )
+                WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+                    "asis_manual_approve_$recordId",
+                    ExistingWorkPolicy.REPLACE,
+                    request
+                )
+            }
         }
 
         fun enqueuePendingAll(context: Context) = enqueueMatcherSweep(context)

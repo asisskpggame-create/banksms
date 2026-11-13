@@ -182,6 +182,9 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                 is PendingFetchResult.Unauthorized401 -> {
                     _testConnectionState.value = TestConnectionUiState.Error(401, res.message)
                 }
+                is PendingFetchResult.NotFound404FallbackToSmsIn -> {
+                    _testConnectionState.value = TestConnectionUiState.Error(404, res.message)
+                }
                 is PendingFetchResult.PermanentError -> {
                     _testConnectionState.value = TestConnectionUiState.Error(res.httpCode, res.message)
                 }
@@ -319,5 +322,15 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectAllBanks(selectAll: Boolean) {
         settingsRepo.selectAllBanks(selectAll)
+    }
+
+    companion object {
+        fun provideFactory(application: Application): androidx.lifecycle.ViewModelProvider.Factory =
+            object : androidx.lifecycle.ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
+                    return AsisViewModel(application) as T
+                }
+            }
     }
 }

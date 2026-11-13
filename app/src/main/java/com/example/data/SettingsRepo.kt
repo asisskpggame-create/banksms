@@ -105,9 +105,11 @@ class SettingsRepo private constructor(context: Context) {
     }
 
     fun saveEndpointAndToken(endpointUrl: String, token: String, localMaxToman: Long = readSettings().localMaxToman) {
+        val cleanUrl = com.example.network.GatewayApiClient.cleanCredentialString(endpointUrl)
+        val cleanToken = com.example.network.GatewayApiClient.cleanCredentialString(token)
         prefs.edit()
-            .putString(KEY_ENDPOINT_URL, endpointUrl.trim())
-            .putString(KEY_GATEWAY_TOKEN, token.trim())
+            .putString(KEY_ENDPOINT_URL, cleanUrl)
+            .putString(KEY_GATEWAY_TOKEN, cleanToken)
             .putLong(KEY_LOCAL_MAX_TOMAN, maxOf(0L, localMaxToman))
             .putString(KEY_LAST_TOKEN_ERROR, null)
             .apply()

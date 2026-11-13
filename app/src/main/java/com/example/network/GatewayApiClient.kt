@@ -44,6 +44,7 @@ sealed class PendingFetchResult {
         val items: List<Item>
     ) : PendingFetchResult()
 
+    data class NotFound404FallbackToSmsIn(val message: String) : PendingFetchResult()
     data class Unauthorized401(val message: String) : PendingFetchResult()
     data class PermanentError(val httpCode: Int?, val message: String) : PendingFetchResult()
     data class RetryableError(val httpCode: Int?, val message: String) : PendingFetchResult()
@@ -71,11 +72,17 @@ sealed class ApproveResult {
 
 /**
  * Implements both `APP_SIDE_APPROVAL_SPEC.md` (`GET /sms-pending`, `POST /sms-approve` with HMAC-SHA256)
- * and `API_CONTRACT.md` (`POST /sms-in` for `تست اتصال`).
+ * and `API_CONTRACT.md` (`POST /sms-in` for `تست اتصال` and automatic fallback if server only has `/sms-in`).
  */
 object GatewayApiClient {
 
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+    private val INVISIBLE_MARKS = setOf(
+        '\u200b', '\u200c', '\u200d', '\u200e', '\u200f',
+        '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
+        '\u2066', '\u2067', '\u2068', '\u2069', '\u00a0', '\ufeff'
+    )
 
     private val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -86,9 +93,21 @@ object GatewayApiClient {
             .build()
     }
 
+    /** Strips invisible directional marks (e.g. when copy-pasted from Telegram) and whitespace. */
+    fun cleanCredentialString(raw: String?): String {
+        if (raw.isNullOrEmpty()) return ""
+        return buildString(raw.length) {
+            for (ch in raw) {
+                if (ch !in INVISIBLE_MARKS && !ch.isISOControl()) {
+                    append(ch)
+                }
+            }
+        }.trim()
+    }
+
     fun validateInputConfig(rawEndpointUrl: String, rawToken: String): String? {
-        val url = rawEndpointUrl.trim()
-        val token = rawToken.trim()
+        val url = cleanCredentialString(rawEndpointUrl)
+        val token = cleanCredentialString(rawToken)
         if (url.isEmpty()) {
             return "آدرس سرور تنظیم نشده است."
         }
@@ -105,7 +124,7 @@ object GatewayApiClient {
     }
 
     fun extractBasePanelUrl(rawEndpointUrl: String): String {
-        var trimmed = rawEndpointUrl.trim().trimEnd('/')
+        var trimmed = cleanCredentialString(rawEndpointUrl).trimEnd('/')
         if (trimmed.isEmpty()) return ""
         for (suffix in listOf("/sms-in", "/sms-pending", "/sms-approve")) {
             if (trimmed.endsWith(suffix, ignoreCase = true)) {
@@ -142,9 +161,10 @@ object GatewayApiClient {
         amountMinor: Long,
         ts: Long
     ): String {
+        val cleanToken = cleanCredentialString(token)
         val message = "$kind|$publicId|$fingerprint|$amountMinor|$ts"
         val mac = Mac.getInstance("HmacSHA256")
-        val keySpec = SecretKeySpec(token.trim().toByteArray(Charsets.UTF_8), "HmacSHA256")
+        val keySpec = SecretKeySpec(cleanToken.toByteArray(Charsets.UTF_8), "HmacSHA256")
         mac.init(keySpec)
         val bytes = mac.doFinal(message.toByteArray(Charsets.UTF_8))
         return bytes.joinToString("") { "%02x".format(it) }
@@ -163,7 +183,7 @@ object GatewayApiClient {
             return@withContext PendingFetchResult.PermanentError(null, validationError)
         }
 
-        val cleanToken = token.trim()
+        val cleanToken = cleanCredentialString(token)
         val rawUrl = buildPendingUrl(endpointUrl)
         val httpUrl = rawUrl.toHttpUrlOrNull()
             ?.newBuilder()
@@ -226,11 +246,10 @@ object GatewayApiClient {
                         )
                     }
                     code == 401 -> PendingFetchResult.Unauthorized401(
-                        errMsg ?: "توکن نامعتبر است (خطای ۴۰۱ در sms-pending)."
+                        errMsg ?: "توکن نامعتبر است (خطای ۴۰۱)."
                     )
-                    code == 404 -> PendingFetchResult.PermanentError(
-                        404,
-                        errMsg ?: "مسیر /sms-pending در سرور یافت نشد یا درگاه خاموش است (۴۰۴)."
+                    code == 404 || code == 405 -> PendingFetchResult.NotFound404FallbackToSmsIn(
+                        errMsg ?: "سرور روی نسخهٔ کلاسیک /sms-in است؛ ارسال مستقیم به /sms-in انجام می‌شود."
                     )
                     code == 429 -> PendingFetchResult.RetryableError(
                         429,
@@ -245,7 +264,7 @@ object GatewayApiClient {
         } catch (e: IOException) {
             PendingFetchResult.RetryableError(
                 null,
-                "عدم دسترسی به شبکه هنگام دریافت sms-pending (${e.javaClass.simpleName})."
+                "عدم دسترسی به شبکه (${e.javaClass.simpleName})."
             )
         } catch (e: Exception) {
             PendingFetchResult.RetryableError(
@@ -271,7 +290,7 @@ object GatewayApiClient {
         smsReceivedMs: Long,
         tsMs: Long
     ): ApproveResult = withContext(Dispatchers.IO) {
-        val cleanToken = token.trim()
+        val cleanToken = cleanCredentialString(token)
         val finalUrl = buildApproveUrl(endpointUrl)
         val sig = computeApprovalHmac(
             token = cleanToken,
@@ -328,7 +347,6 @@ object GatewayApiClient {
                         )
                     }
                     code == 409 -> {
-                        // 409 Conflict -> Server safety lock rejected auto-approval; mark MANUAL and do NOT retry
                         ApproveResult.Conflict409(
                             reason = reason ?: "سرور تأیید خودکار را رد کرد (۴۰۹ Conflict) — لطفاً دستی بررسی کنید."
                         )
@@ -366,7 +384,7 @@ object GatewayApiClient {
     }
 
     /**
-     * Legacy / Test Connection endpoint: `POST /<PANEL_PATH>/sms-in`
+     * `POST /<PANEL_PATH>/sms-in`
      */
     suspend fun sendSms(
         endpointUrl: String,
@@ -378,11 +396,12 @@ object GatewayApiClient {
         if (validationError != null) {
             return@withContext GatewayResult.PermanentFailure(
                 httpCode = null,
-                isTokenError = token.trim().length < 20,
+                isTokenError = cleanCredentialString(token).length < 20,
                 message = validationError
             )
         }
 
+        val cleanToken = cleanCredentialString(token)
         val finalUrl = normalizeUrl(endpointUrl)
         val trimmedSms = smsText.take(SmsParser.MAX_SMS_LENGTH)
         if (trimmedSms.isBlank()) {
@@ -394,7 +413,7 @@ object GatewayApiClient {
         }
 
         val payloadJson = JSONObject().apply {
-            put("token", token.trim())
+            put("token", cleanToken)
             put("sms", trimmedSms)
             put("bank", bankCode.trim())
         }.toString()

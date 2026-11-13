@@ -102,7 +102,11 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AsisAppScreen(
-    asisViewModel: AsisViewModel = viewModel()
+    asisViewModel: AsisViewModel = viewModel(
+        factory = AsisViewModel.provideFactory(
+            LocalContext.current.applicationContext as android.app.Application
+        )
+    )
 ) {
     val context = LocalContext.current
     var currentTab by rememberSaveable { mutableStateOf(AsisTab.HOME) }
