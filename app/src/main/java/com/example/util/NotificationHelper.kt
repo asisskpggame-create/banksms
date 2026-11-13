@@ -1,6 +1,7 @@
 package com.example.util
 
 import android.Manifest
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -23,30 +24,34 @@ object NotificationHelper {
     private const val NOTIFICATION_ID_MANUAL_BASE = 6000
 
     fun ensureChannel(context: Context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-                ?: return
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                context.getString(R.string.notif_channel_name),
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = context.getString(R.string.notif_channel_desc)
-                enableVibration(true)
-            }
-            manager.createNotificationChannel(channel)
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            context.getString(R.string.notif_channel_name),
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = context.getString(R.string.notif_channel_desc)
+            enableVibration(true)
         }
+        manager.createNotificationChannel(channel)
     }
 
-    private fun canPostNotification(context: Context): Boolean {
+    private fun postIfPermitted(context: Context, id: Int, notification: Notification) {
         ensureChannel(context)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            return ContextCompat.checkSelfPermission(
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
         }
-        return true
+        try {
+            NotificationManagerCompat.from(context).notify(id, notification)
+        } catch (_: SecurityException) {
+            // Permission revoked concurrently
+        }
     }
 
     private fun mainActivityPendingIntent(context: Context): PendingIntent {
@@ -62,8 +67,7 @@ object NotificationHelper {
     }
 
     fun notifyTokenError(context: Context, errorDetail: String) {
-        if (!canPostNotification(context)) return
-
+        ensureChannel(context)
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_asis_shield)
             .setContentTitle("خطای ۴۰۱: توکن یا امضای درگاه نامعتبر است")
@@ -74,13 +78,11 @@ object NotificationHelper {
             .setContentIntent(mainActivityPendingIntent(context))
             .build()
 
-        runCatching {
-            NotificationManagerCompat.from(context).notify(NOTIFICATION_ID_TOKEN_ERROR, notification)
-        }
+        postIfPermitted(context, NOTIFICATION_ID_TOKEN_ERROR, notification)
     }
 
     fun notifyAmbiguousDeposit(context: Context, depositId: Long, amountMinor: Long) {
-        if (!canPostNotification(context)) return
+        ensureChannel(context)
         val tomanStr = SmsParser.formatToman(amountMinor)
         val msg = "واریز $tomanStr تومان رسید، اما چند سفارش منتظر با همین مبلغ وجود دارد. لطفاً دستی بررسی و تأیید کنید."
 
@@ -94,10 +96,7 @@ object NotificationHelper {
             .setContentIntent(mainActivityPendingIntent(context))
             .build()
 
-        runCatching {
-            NotificationManagerCompat.from(context)
-                .notify(NOTIFICATION_ID_AMBIGUOUS_BASE + (depositId % 500).toInt(), notification)
-        }
+        postIfPermitted(context, NOTIFICATION_ID_AMBIGUOUS_BASE + (depositId % 500).toInt(), notification)
     }
 
     fun notifyManualApprovalNeeded(
@@ -107,7 +106,7 @@ object NotificationHelper {
         matchedLabel: String,
         whyNote: String
     ) {
-        if (!canPostNotification(context)) return
+        ensureChannel(context)
         val tomanStr = SmsParser.formatToman(amountMinor)
         val msg = "پیامک بانک ($tomanStr تومان) با $matchedLabel می‌خواند ($whyNote). برای زدن دکمهٔ تأیید وارد برنامه شوید."
 
@@ -121,9 +120,6 @@ object NotificationHelper {
             .setContentIntent(mainActivityPendingIntent(context))
             .build()
 
-        runCatching {
-            NotificationManagerCompat.from(context)
-                .notify(NOTIFICATION_ID_MANUAL_BASE + (depositId % 500).toInt(), notification)
-        }
+        postIfPermitted(context, NOTIFICATION_ID_MANUAL_BASE + (depositId % 500).toInt(), notification)
     }
 }

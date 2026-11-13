@@ -21,22 +21,23 @@ object InternetWatchService {
     private val _isOnlineFlow = MutableStateFlow(true)
     val isOnlineFlow: StateFlow<Boolean> = _isOnlineFlow.asStateFlow()
 
-    fun checkCurrentlyOnline(context: Context): Boolean {
+    fun checkCurrentlyOnline(context: Context): Boolean = runCatching {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            ?: return false
-        val activeNetwork = cm.activeNetwork ?: return false
-        val caps = cm.getNetworkCapabilities(activeNetwork) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-    }
+            ?: return@runCatching false
+        val activeNetwork = cm.activeNetwork ?: return@runCatching false
+        val caps = cm.getNetworkCapabilities(activeNetwork) ?: return@runCatching false
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }.getOrDefault(true)
 
     fun register(context: Context) {
-        val appContext = context.applicationContext
+        val appContext = context.applicationContext ?: context
         _isOnlineFlow.value = checkCurrentlyOnline(appContext)
 
         if (!isRegistered.compareAndSet(false, true)) return
 
-        val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            ?: return
+        val cm = runCatching {
+            appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        }.getOrNull() ?: return
 
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)

@@ -10,14 +10,25 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.History
@@ -30,13 +41,17 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -72,6 +87,7 @@ import com.example.ui.BanksScreen
 import com.example.ui.HomeScreen
 import com.example.ui.LogsScreen
 import com.example.ui.SettingsScreen
+import com.example.ui.components.StatusPill
 import com.example.ui.theme.MyApplicationTheme
 import com.example.util.NotificationHelper
 
@@ -90,13 +106,17 @@ enum class AsisTab(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        NotificationHelper.ensureChannel(this)
-        InternetWatchService.register(this)
+        runCatching { NotificationHelper.ensureChannel(this) }
+        runCatching { InternetWatchService.register(this) }
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                    AsisAppScreen()
+                    val vmFactory = remember(application) {
+                        AsisViewModel.provideFactory(application)
+                    }
+                    val asisViewModel: AsisViewModel = viewModel(factory = vmFactory)
+                    AsisAppScreen(asisViewModel = asisViewModel)
                 }
             }
         }
@@ -107,9 +127,9 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AsisAppScreen(
     asisViewModel: AsisViewModel = viewModel(
-        factory = AsisViewModel.provideFactory(
-            LocalContext.current.applicationContext as android.app.Application
-        )
+        factory = (LocalContext.current.applicationContext as? android.app.Application)?.let {
+            AsisViewModel.provideFactory(it)
+        }
     )
 ) {
     val context = LocalContext.current
@@ -176,129 +196,264 @@ fun AsisAppScreen(
         currentTab = AsisTab.HOME
     }
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        contentWindowInsets = WindowInsets.safeDrawing,
-        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_asis_shield),
-                            contentDescription = null,
-                            tint = Color.Unspecified,
-                            modifier = Modifier.size(28.dp)
-                        )
-                        Text(
-                            text = stringResource(id = R.string.app_name),
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    titleContentColor = MaterialTheme.colorScheme.onBackground
-                )
-            )
-        },
-        bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface
-            ) {
-                for (tab in AsisTab.entries) {
-                    val selected = currentTab == tab
-                    NavigationBarItem(
-                        selected = selected,
-                        onClick = { currentTab = tab },
-                        modifier = Modifier.testTag("nav_tab_${tab.route}"),
-                        icon = {
-                            if (tab == AsisTab.LOGS && (queueCount > 0 || failedCount > 0)) {
-                                BadgedBox(
-                                    badge = {
-                                        Badge(
-                                            containerColor = if (failedCount > 0) {
-                                                MaterialTheme.colorScheme.error
-                                            } else {
-                                                MaterialTheme.colorScheme.tertiary
-                                            }
-                                        ) {
-                                            Text((queueCount + failedCount).toString())
-                                        }
-                                    }
+    val badgeCount = queueCount + failedCount
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val useNavRail = maxWidth >= 600.dp
+
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            contentWindowInsets = WindowInsets.safeDrawing,
+            snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+            topBar = {
+                Column {
+                    TopAppBar(
+                        title = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                                    ),
+                                    modifier = Modifier.size(36.dp)
                                 ) {
-                                    Icon(
-                                        imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                        contentDescription = stringResource(tab.titleRes)
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.ic_asis_shield),
+                                            contentDescription = null,
+                                            tint = Color.Unspecified,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                }
+                                Column {
+                                    Text(
+                                        text = stringResource(id = R.string.app_name),
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = stringResource(id = R.string.app_subtitle),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
-                            } else {
-                                Icon(
-                                    imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                    contentDescription = stringResource(tab.titleRes)
-                                )
                             }
                         },
-                        label = {
-                            Text(text = stringResource(id = tab.titleRes))
-                        }
+                        actions = {
+                            val (statusText, statusColor, pulsing) = when {
+                                !settings.isConfigured -> Triple(
+                                    "نیازمند تنظیم",
+                                    MaterialTheme.colorScheme.tertiary,
+                                    false
+                                )
+                                settings.serviceEnabled && isOnline -> Triple(
+                                    "آنلاین و فعال",
+                                    MaterialTheme.colorScheme.primary,
+                                    true
+                                )
+                                settings.serviceEnabled -> Triple(
+                                    "آفلاین",
+                                    MaterialTheme.colorScheme.tertiary,
+                                    false
+                                )
+                                else -> Triple(
+                                    "متوقف",
+                                    MaterialTheme.colorScheme.onSurfaceVariant,
+                                    false
+                                )
+                            }
+                            StatusPill(
+                                label = statusText,
+                                color = statusColor,
+                                isPulsing = pulsing,
+                                modifier = Modifier.padding(end = 12.dp)
+                            )
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background,
+                            titleContentColor = MaterialTheme.colorScheme.onBackground
+                        )
                     )
+                    HorizontalDivider(
+                        thickness = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant
+                    )
+                }
+            },
+            bottomBar = {
+                if (!useNavRail) {
+                    Column {
+                        HorizontalDivider(
+                            thickness = 1.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant
+                        )
+                        NavigationBar(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            tonalElevation = 0.dp,
+                            windowInsets = WindowInsets.navigationBars
+                        ) {
+                            for (tab in AsisTab.entries) {
+                                val selected = currentTab == tab
+                                NavigationBarItem(
+                                    selected = selected,
+                                    onClick = { currentTab = tab },
+                                    modifier = Modifier.testTag("nav_tab_${tab.route}"),
+                                    icon = {
+                                        NavTabIcon(
+                                            tab = tab,
+                                            selected = selected,
+                                            badgeCount = badgeCount,
+                                            hasErrors = failedCount > 0
+                                        )
+                                    },
+                                    label = {
+                                        Text(
+                                            text = stringResource(id = tab.titleRes),
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        ) { innerPadding ->
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                if (useNavRail) {
+                    NavigationRail(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        modifier = Modifier.fillMaxHeight()
+                    ) {
+                        Spacer(modifier = Modifier.weight(0.15f))
+                        for (tab in AsisTab.entries) {
+                            val selected = currentTab == tab
+                            NavigationRailItem(
+                                selected = selected,
+                                onClick = { currentTab = tab },
+                                modifier = Modifier.testTag("nav_tab_${tab.route}"),
+                                icon = {
+                                    NavTabIcon(
+                                        tab = tab,
+                                        selected = selected,
+                                        badgeCount = badgeCount,
+                                        hasErrors = failedCount > 0
+                                    )
+                                },
+                                label = {
+                                    Text(text = stringResource(id = tab.titleRes))
+                                }
+                            )
+                        }
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    contentAlignment = Alignment.TopCenter
+                ) {
+                    Crossfade(
+                        targetState = currentTab,
+                        animationSpec = tween(durationMillis = 200),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .widthIn(max = 720.dp)
+                            .fillMaxHeight(),
+                        label = "tabTransition"
+                    ) { tab ->
+                        when (tab) {
+                            AsisTab.HOME -> HomeScreen(
+                                settings = settings,
+                                isOnline = isOnline,
+                                hasSmsPermissions = hasSmsPermissions,
+                                hasNotificationPermission = hasNotificationPermission,
+                                queueCount = queueCount,
+                                sentCount = sentCount,
+                                failedCount = failedCount,
+                                lastSentLog = lastSentLog,
+                                onToggleService = asisViewModel::setServiceEnabled,
+                                onRequestPermissions = requestAllNeededPermissions,
+                                onFlushQueue = asisViewModel::flushQueueNow,
+                                onSimulateSms = asisViewModel::enqueueSimulatedBankSms,
+                                onNavigateToSettings = { currentTab = AsisTab.SETTINGS },
+                                onNavigateToLogs = { currentTab = AsisTab.LOGS }
+                            )
+
+                            AsisTab.LOGS -> LogsScreen(
+                                logs = allLogs,
+                                onApproveManually = asisViewModel::approveRecordManually,
+                                onRetrySingle = asisViewModel::retrySingleLog,
+                                onClearAllLogs = asisViewModel::clearAllLogs
+                            )
+
+                            AsisTab.BANKS -> BanksScreen(
+                                settings = settings,
+                                onToggleFilterEnabled = asisViewModel::setFilterBanksEnabled,
+                                onToggleBank = asisViewModel::toggleBankSelection,
+                                onSelectAllBanks = asisViewModel::selectAllBanks
+                            )
+
+                            AsisTab.SETTINGS -> SettingsScreen(
+                                settings = settings,
+                                testConnectionState = testConnectionState,
+                                onSaveSettings = asisViewModel::saveSettings,
+                                onToggleAutoApproveInApp = asisViewModel::setAutoApproveInApp,
+                                onTestConnection = asisViewModel::runTestConnection,
+                                onTestPendingEndpoint = asisViewModel::runTestPendingEndpoint,
+                                onResetTestState = asisViewModel::resetTestConnectionState
+                            )
+                        }
+                    }
                 }
             }
         }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            when (currentTab) {
-                AsisTab.HOME -> HomeScreen(
-                    settings = settings,
-                    isOnline = isOnline,
-                    hasSmsPermissions = hasSmsPermissions,
-                    hasNotificationPermission = hasNotificationPermission,
-                    queueCount = queueCount,
-                    sentCount = sentCount,
-                    failedCount = failedCount,
-                    lastSentLog = lastSentLog,
-                    onToggleService = asisViewModel::setServiceEnabled,
-                    onRequestPermissions = requestAllNeededPermissions,
-                    onFlushQueue = asisViewModel::flushQueueNow,
-                    onSimulateSms = asisViewModel::enqueueSimulatedBankSms,
-                    onNavigateToSettings = { currentTab = AsisTab.SETTINGS },
-                    onNavigateToLogs = { currentTab = AsisTab.LOGS }
-                )
+    }
+}
 
-                AsisTab.LOGS -> LogsScreen(
-                    logs = allLogs,
-                    onApproveManually = asisViewModel::approveRecordManually,
-                    onRetrySingle = asisViewModel::retrySingleLog,
-                    onClearAllLogs = asisViewModel::clearAllLogs
-                )
-
-                AsisTab.BANKS -> BanksScreen(
-                    settings = settings,
-                    onToggleFilterEnabled = asisViewModel::setFilterBanksEnabled,
-                    onToggleBank = asisViewModel::toggleBankSelection,
-                    onSelectAllBanks = asisViewModel::selectAllBanks
-                )
-
-                AsisTab.SETTINGS -> SettingsScreen(
-                    settings = settings,
-                    testConnectionState = testConnectionState,
-                    onSaveSettings = asisViewModel::saveSettings,
-                    onToggleAutoApproveInApp = asisViewModel::setAutoApproveInApp,
-                    onTestConnection = asisViewModel::runTestConnection,
-                    onTestPendingEndpoint = asisViewModel::runTestPendingEndpoint,
-                    onResetTestState = asisViewModel::resetTestConnectionState
-                )
+@Composable
+private fun NavTabIcon(
+    tab: AsisTab,
+    selected: Boolean,
+    badgeCount: Int,
+    hasErrors: Boolean
+) {
+    if (tab == AsisTab.LOGS && badgeCount > 0) {
+        BadgedBox(
+            badge = {
+                Badge(
+                    containerColor = if (hasErrors) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.tertiary
+                    }
+                ) {
+                    Text(badgeCount.toString())
+                }
             }
+        ) {
+            Icon(
+                imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                contentDescription = stringResource(tab.titleRes)
+            )
         }
+    } else {
+        Icon(
+            imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+            contentDescription = stringResource(tab.titleRes)
+        )
     }
 }
 

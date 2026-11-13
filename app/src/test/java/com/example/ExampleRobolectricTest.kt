@@ -45,4 +45,19 @@ class ExampleRobolectricTest {
         ForwardWorker.enqueueMatcherSweep(context)
         ForwardWorker.enqueueManualApprove(context, recordId = 1L)
     }
+
+    @Test
+    fun `launch MainActivity and instantiate AsisViewModel via default ViewModelProvider`() {
+        val controller = org.robolectric.Robolectric.buildActivity(MainActivity::class.java).create()
+        val activity = controller.get()
+        assertNotNull(activity)
+
+        val vmViaSavedState = androidx.lifecycle.ViewModelProvider(activity)[AsisViewModel::class.java]
+        assertNotNull(vmViaSavedState.settingsState.value)
+
+        // Force Room openHelper + query execution to catch any schema/KSP/migration/SQL issues
+        val db = AppDatabase.getInstance(activity.applicationContext)
+        val writable = db.openHelper.writableDatabase
+        assertTrue(writable.isOpen)
+    }
 }

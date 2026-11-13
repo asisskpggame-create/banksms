@@ -52,6 +52,11 @@ data class GatewaySettings(
     /** Effective max Toman ceiling (local override if > 0, else server's `auto_max_toman`). */
     val effectiveMaxToman: Long
         get() = if (localMaxToman > 0L) localMaxToman else lastServerMaxToman
+
+    override fun toString(): String =
+        "GatewaySettings(endpointUrl=$endpointUrl, gatewayToken=***, serviceEnabled=$serviceEnabled, " +
+            "autoApproveInApp=$autoApproveInApp, localMaxToman=$localMaxToman, " +
+            "filterBanksEnabled=$filterBanksEnabled, selectedBankCodes=${selectedBankCodes.size} banks)"
 }
 
 /**
@@ -83,7 +88,9 @@ class SettingsRepo private constructor(context: Context) {
     }
 
     fun readSettings(): GatewaySettings {
-        val defaultBanks = SmsParser.KNOWN_BANKS.map { it.code }.toSet()
+        val defaultBanks = runCatching {
+            SmsParser.KNOWN_BANKS.map { it.code }.toSet()
+        }.getOrDefault(emptySet())
         return try {
             val savedBanks = prefs.getStringSet(KEY_SELECTED_BANKS, null) ?: defaultBanks
             GatewaySettings(

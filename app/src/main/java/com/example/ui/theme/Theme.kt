@@ -9,12 +9,12 @@ import androidx.compose.ui.graphics.Color
 
 private val DarkColorScheme = darkColorScheme(
     primary = AsisEmerald,
-    onPrimary = Color(0xFF042F24),
+    onPrimary = Color(0xFF03281E),
     primaryContainer = AsisEmeraldContainer,
     onPrimaryContainer = AsisEmeraldLight,
     secondary = AsisCyan,
     onSecondary = Color(0xFF002B36),
-    secondaryContainer = Color(0xFF164E63),
+    secondaryContainer = Color(0xFF13485C),
     onSecondaryContainer = Color(0xFFA5F3FC),
     tertiary = AsisAmber,
     onTertiary = Color(0xFF3B2000),
@@ -29,8 +29,12 @@ private val DarkColorScheme = darkColorScheme(
     surface = AsisSurfaceDark,
     onSurface = Color(0xFFF1F5F9),
     surfaceVariant = AsisCardDark,
-    onSurfaceVariant = Color(0xFF94A3B8),
-    outline = AsisBorderDark
+    onSurfaceVariant = Color(0xFF9FB0C7),
+    surfaceContainerLow = AsisSurfaceDark,
+    surfaceContainer = AsisCardDark,
+    surfaceContainerHigh = AsisCardElevatedDark,
+    outline = AsisBorderDark,
+    outlineVariant = AsisBorderDark.copy(alpha = 0.65f)
 )
 
 private val LightColorScheme = lightColorScheme(
@@ -56,7 +60,11 @@ private val LightColorScheme = lightColorScheme(
     onSurface = AsisSlateText,
     surfaceVariant = AsisCardLight,
     onSurfaceVariant = AsisMutedText,
-    outline = Color(0xFFCBD5E1)
+    surfaceContainerLow = AsisSurfaceLight,
+    surfaceContainer = AsisCardLight,
+    surfaceContainerHigh = AsisCardElevatedLight,
+    outline = AsisBorderLight,
+    outlineVariant = AsisBorderLight.copy(alpha = 0.8f)
 )
 
 @Composable
@@ -69,6 +77,7 @@ fun MyApplicationTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,
+        shapes = AppShapes,
         content = content
     )
 }

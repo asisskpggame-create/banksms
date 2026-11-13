@@ -40,7 +40,7 @@ sealed class TestConnectionUiState {
 
 class AsisViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val appContext = application.applicationContext
+    private val appContext = application.applicationContext ?: application
     private val logDao = AppDatabase.getInstance(appContext).logDao()
     private val settingsRepo = SettingsRepo.getInstance(appContext)
 
@@ -69,14 +69,16 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
 
     init {
-        InternetWatchService.register(appContext)
+        runCatching { InternetWatchService.register(appContext) }
         // Periodic 30-second matcher loop per Section 1 of APP_SIDE_APPROVAL_SPEC.md
         viewModelScope.launch {
             while (isActive) {
                 delay(30_000L)
-                val current = settingsRepo.readSettings()
-                if (current.serviceEnabled && current.isConfigured) {
-                    ForwardWorker.runSweepNow(appContext)
+                runCatching {
+                    val current = settingsRepo.readSettings()
+                    if (current.serviceEnabled && current.isConfigured) {
+                        ForwardWorker.runSweepNow(appContext)
+                    }
                 }
             }
         }
@@ -330,8 +332,21 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
             object : androidx.lifecycle.ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
-                    return AsisViewModel(application) as T
+                    if (modelClass.isAssignableFrom(AsisViewModel::class.java)) {
+                        return AsisViewModel(application) as T
+                    }
+                    throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
                 }
+
+                override fun <T : androidx.lifecycle.ViewModel> create(
+                    modelClass: Class<T>,
+                    extras: androidx.lifecycle.viewmodel.CreationExtras
+                ): T = create(modelClass)
+
+                override fun <T : androidx.lifecycle.ViewModel> create(
+                    modelClass: kotlin.reflect.KClass<T>,
+                    extras: androidx.lifecycle.viewmodel.CreationExtras
+                ): T = create(modelClass.java)
             }
     }
 }
