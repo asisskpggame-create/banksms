@@ -10,8 +10,11 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface LogDao {
 
-    @Query("SELECT * FROM sms_records ORDER BY receivedMs DESC, id DESC")
+    @Query("SELECT * FROM sms_records WHERE reason != 'promo' ORDER BY receivedMs DESC, id DESC")
     fun observeAllLogs(): Flow<List<SmsRecord>>
+
+    @Query("DELETE FROM sms_records WHERE reason = 'promo'")
+    suspend fun deletePromoLogs(): Int
 
     @Query("SELECT * FROM sms_records WHERE status IN ('NEW', 'RETRY') AND amountMinor IS NOT NULL ORDER BY receivedMs ASC, id ASC")
     suspend fun getActiveDepositsForMatching(): List<SmsRecord>

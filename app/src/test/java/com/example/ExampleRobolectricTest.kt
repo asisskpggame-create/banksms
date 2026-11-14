@@ -84,6 +84,17 @@ class ExampleRobolectricTest {
             )
             org.junit.Assert.assertFalse(personalResult)
 
+            // Promotional / link SMS must be ignored and never stored in logs
+            val promoBody = "جایزه ویژه واریز 10,000,000 ریال! روی لینک https://example.com کلیک کنید"
+            val promoResult = SmsReceiver.ingestIncomingSms(
+                appContext = app,
+                sender = "98200033",
+                rawBody = promoBody
+            )
+            org.junit.Assert.assertFalse(promoResult)
+            val promoFp = com.example.data.SmsParser.fingerprint("98200033", promoBody)
+            org.junit.Assert.assertNull(db.logDao().getByFingerprint(promoFp))
+
             // Valid bank deposit SMS must be stored as NEW and trigger ForwardWorker
             val bankBody = "بانک ملت\nواریز به حساب 0123456789\nمبلغ: 50,000,000ریال\nمانده: 90,000,000ریال"
             val bankResult = SmsReceiver.ingestIncomingSms(

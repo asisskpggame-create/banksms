@@ -90,44 +90,48 @@ fun LogsScreen(
     var showClearConfirm by rememberSaveable { mutableStateOf(false) }
     var manualDialogRecord by remember { mutableStateOf<SmsRecord?>(null) }
 
-    val filterCounts by remember(logs) {
+    val visibleLogs = remember(logs) {
+        logs.filterNot { it.reason == "promo" }
+    }
+
+    val filterCounts by remember(visibleLogs) {
         derivedStateOf {
             mapOf(
-                LogFilter.ALL to logs.size,
-                LogFilter.MATCHED to logs.count { it.statusEnum == SmsStatus.MATCHED },
-                LogFilter.MANUAL_AMBIGUOUS to logs.count {
+                LogFilter.ALL to visibleLogs.size,
+                LogFilter.MATCHED to visibleLogs.count { it.statusEnum == SmsStatus.MATCHED },
+                LogFilter.MANUAL_AMBIGUOUS to visibleLogs.count {
                     it.statusEnum == SmsStatus.MANUAL ||
                         it.statusEnum == SmsStatus.AMBIGUOUS ||
                         it.statusEnum == SmsStatus.FAILED
                 },
-                LogFilter.NEW_RETRY to logs.count {
+                LogFilter.NEW_RETRY to visibleLogs.count {
                     it.statusEnum == SmsStatus.NEW ||
                         it.statusEnum == SmsStatus.RETRY ||
                         it.statusEnum == SmsStatus.CLAIMED
                 },
-                LogFilter.IGNORED to logs.count {
+                LogFilter.IGNORED to visibleLogs.count {
                     it.statusEnum == SmsStatus.IGNORED || it.statusEnum == SmsStatus.EXPIRED
                 }
             )
         }
     }
 
-    val filteredLogs by remember(logs, selectedFilter, searchQuery) {
+    val filteredLogs by remember(visibleLogs, selectedFilter, searchQuery) {
         derivedStateOf {
             val statusFiltered = when (selectedFilter) {
-                LogFilter.ALL -> logs
-                LogFilter.MATCHED -> logs.filter { it.statusEnum == SmsStatus.MATCHED }
-                LogFilter.MANUAL_AMBIGUOUS -> logs.filter {
+                LogFilter.ALL -> visibleLogs
+                LogFilter.MATCHED -> visibleLogs.filter { it.statusEnum == SmsStatus.MATCHED }
+                LogFilter.MANUAL_AMBIGUOUS -> visibleLogs.filter {
                     it.statusEnum == SmsStatus.MANUAL ||
                         it.statusEnum == SmsStatus.AMBIGUOUS ||
                         it.statusEnum == SmsStatus.FAILED
                 }
-                LogFilter.NEW_RETRY -> logs.filter {
+                LogFilter.NEW_RETRY -> visibleLogs.filter {
                     it.statusEnum == SmsStatus.NEW ||
                         it.statusEnum == SmsStatus.RETRY ||
                         it.statusEnum == SmsStatus.CLAIMED
                 }
-                LogFilter.IGNORED -> logs.filter {
+                LogFilter.IGNORED -> visibleLogs.filter {
                     it.statusEnum == SmsStatus.IGNORED || it.statusEnum == SmsStatus.EXPIRED
                 }
             }
@@ -165,12 +169,12 @@ fun LogsScreen(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "مجموع ${logs.size} رکورد ثبت‌شده",
+                    text = "مجموع ${visibleLogs.size} رکورد ثبت‌شده",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (logs.isNotEmpty()) {
+            if (visibleLogs.isNotEmpty()) {
                 OutlinedButton(
                     onClick = { showClearConfirm = true },
                     modifier = Modifier
@@ -196,7 +200,7 @@ fun LogsScreen(
             }
         }
 
-        if (logs.isNotEmpty()) {
+        if (visibleLogs.isNotEmpty()) {
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },

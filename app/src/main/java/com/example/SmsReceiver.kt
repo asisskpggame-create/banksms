@@ -103,7 +103,18 @@ class SmsReceiver : BroadcastReceiver() {
             }
 
             val parsed = SmsParser.parse(rawBody)
+            // Promotional / link SMS are never stored in logs
+            if (parsed.reason == "promo") {
+                return false
+            }
+
             val detectedBank = SmsParser.detectBank(bank, rawBody)
+            val isKnownBank = detectedBank.senderKeywords.isNotEmpty() || detectedBank.bodyKeywords.isNotEmpty()
+            // Ignore non-deposit messages from unknown/promotional shortcodes that are not Iranian banks
+            if (parsed.amountMinor == null && !isKnownBank) {
+                return false
+            }
+
             val initialStatus = if (parsed.amountMinor == null) {
                 SmsStatus.IGNORED
             } else {

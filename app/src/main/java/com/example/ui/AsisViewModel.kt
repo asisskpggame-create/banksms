@@ -70,6 +70,9 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         runCatching { InternetWatchService.register(appContext) }
+        viewModelScope.launch {
+            runCatching { logDao.deletePromoLogs() }
+        }
         // Periodic 30-second matcher loop per Section 1 of APP_SIDE_APPROVAL_SPEC.md
         viewModelScope.launch {
             while (isActive) {
@@ -223,6 +226,10 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val parsed = SmsParser.parse(rawBody)
+            if (parsed.reason == "promo") {
+                _snackbarMessage.value = "پیامک تبلیغاتی یا حاوی لینک تشخیص داده شد و در لاگ ثبت نمی‌شود."
+                return@launch
+            }
             val detected = SmsParser.detectBank(bank, rawBody)
             // a simulated SMS is only parsed and shown: it must never be sent to the server (it could approve a real order)
             val initialStatus = SmsStatus.IGNORED
