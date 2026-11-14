@@ -71,11 +71,16 @@ import com.example.ui.components.StatusPill
 
 private enum class LogFilter(val labelFa: String) {
     ALL("همه"),
+    FAILED_ERRORS("خطا در ارسال"),
     MATCHED("تأییدشده"),
     MANUAL_AMBIGUOUS("بررسی دستی"),
     NEW_RETRY("در صف"),
     IGNORED("نادیده / تست")
 }
+
+private fun SmsRecord.hasSendError(): Boolean =
+    statusEnum == SmsStatus.FAILED ||
+        (!lastError.isNullOrBlank() && statusEnum != SmsStatus.MATCHED && statusEnum != SmsStatus.IGNORED)
 
 @Composable
 fun LogsScreen(
@@ -83,6 +88,7 @@ fun LogsScreen(
     onApproveManually: (record: SmsRecord, overridePublicId: String?, overrideKind: String?) -> Unit,
     onRetrySingle: (SmsRecord) -> Unit,
     onClearAllLogs: () -> Unit,
+    onRetryAllFailed: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var selectedFilter by rememberSaveable { mutableStateOf(LogFilter.ALL) }
@@ -94,10 +100,15 @@ fun LogsScreen(
         logs.filterNot { it.reason == "promo" }
     }
 
+    val errorRecordsCount = remember(visibleLogs) {
+        visibleLogs.count { it.hasSendError() }
+    }
+
     val filterCounts by remember(visibleLogs) {
         derivedStateOf {
             mapOf(
                 LogFilter.ALL to visibleLogs.size,
+                LogFilter.FAILED_ERRORS to visibleLogs.count { it.hasSendError() },
                 LogFilter.MATCHED to visibleLogs.count { it.statusEnum == SmsStatus.MATCHED },
                 LogFilter.MANUAL_AMBIGUOUS to visibleLogs.count {
                     it.statusEnum == SmsStatus.MANUAL ||
@@ -120,6 +131,7 @@ fun LogsScreen(
         derivedStateOf {
             val statusFiltered = when (selectedFilter) {
                 LogFilter.ALL -> visibleLogs
+                LogFilter.FAILED_ERRORS -> visibleLogs.filter { it.hasSendError() }
                 LogFilter.MATCHED -> visibleLogs.filter { it.statusEnum == SmsStatus.MATCHED }
                 LogFilter.MANUAL_AMBIGUOUS -> visibleLogs.filter {
                     it.statusEnum == SmsStatus.MANUAL ||
@@ -143,6 +155,7 @@ fun LogsScreen(
                     rec.bankTitle.contains(q, ignoreCase = true) ||
                         rec.bank.contains(q, ignoreCase = true) ||
                         rec.body.contains(q, ignoreCase = true) ||
+                        (rec.lastError?.contains(q, ignoreCase = true) == true) ||
                         (rec.matchedId?.contains(q, ignoreCase = true) == true) ||
                         (rec.amountMinor?.toString()?.contains(q) == true)
                 }
@@ -169,33 +182,64 @@ fun LogsScreen(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "مجموع ${visibleLogs.size} رکورد ثبت‌شده",
+                    text = if (errorRecordsCount > 0) {
+                        "مجموع ${visibleLogs.size} رکورد • $errorRecordsCount مورد دارای خطای ارسال"
+                    } else {
+                        "مجموع ${visibleLogs.size} رکورد ثبت‌شده"
+                    },
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (errorRecordsCount > 0) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
                 )
             }
-            if (visibleLogs.isNotEmpty()) {
-                OutlinedButton(
-                    onClick = { showClearConfirm = true },
-                    modifier = Modifier
-                        .height(48.dp)
-                        .testTag("clear_logs_button"),
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.DeleteSweep,
-                        contentDescription = "پاک کردن لاگ",
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "پاک کردن",
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.labelLarge
-                    )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (errorRecordsCount > 0) {
+                    Button(
+                        onClick = onRetryAllFailed,
+                        modifier = Modifier
+                            .height(48.dp)
+                            .testTag("retry_all_logs_button"),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "تلاش مجدد همه خطاها",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "تلاش مجدد ($errorRecordsCount)",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+                }
+                if (visibleLogs.isNotEmpty()) {
+                    OutlinedButton(
+                        onClick = { showClearConfirm = true },
+                        modifier = Modifier
+                            .height(48.dp)
+                            .testTag("clear_logs_button"),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteSweep,
+                            contentDescription = "پاک کردن لاگ",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "پاک کردن",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
                 }
             }
         }
@@ -524,26 +568,63 @@ private fun SmsRecordCard(
             }
 
             if (!entry.lastError.isNullOrBlank()) {
+                val isCriticalError = entry.statusEnum == SmsStatus.FAILED ||
+                    entry.statusEnum == SmsStatus.AMBIGUOUS ||
+                    entry.statusEnum == SmsStatus.RETRY
+                val errContainer = if (isCriticalError) {
+                    MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+                } else {
+                    MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f)
+                }
+                val errAccent = if (isCriticalError) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.tertiary
+                }
                 Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = if (entry.statusEnum == SmsStatus.FAILED || entry.statusEnum == SmsStatus.AMBIGUOUS) {
-                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f)
-                    } else {
-                        MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f)
-                    }
+                    shape = RoundedCornerShape(12.dp),
+                    color = errContainer,
+                    border = BorderStroke(1.dp, errAccent.copy(alpha = 0.35f)),
+                    modifier = Modifier.testTag("log_error_reason_box_${entry.id}")
                 ) {
-                    Text(
-                        text = entry.lastError,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (entry.statusEnum == SmsStatus.FAILED || entry.statusEnum == SmsStatus.AMBIGUOUS) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.tertiary
-                        },
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                    )
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Error,
+                            contentDescription = "علت خطا",
+                            tint = errAccent,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = buildString {
+                                    append("علت خطا در ارسال")
+                                    if (entry.httpCode != null) {
+                                        append(" (کد HTTP ${entry.httpCode})")
+                                    } else {
+                                        append(" (خطای ارتباط / عدم اتصال)")
+                                    }
+                                    if (entry.attempts > 0) {
+                                        append(" • تلاش #${entry.attempts}")
+                                    }
+                                    append(":")
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = errAccent
+                            )
+                            Text(
+                                text = entry.lastError,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
                 }
             }
 
@@ -607,19 +688,36 @@ private fun SmsRecordCard(
                         }
                     }
 
-                    TextButton(
+                    Button(
                         onClick = onRetry,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (!entry.lastError.isNullOrBlank()) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.secondaryContainer
+                            },
+                            contentColor = if (!entry.lastError.isNullOrBlank()) {
+                                MaterialTheme.colorScheme.onError
+                            } else {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            }
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp),
                         modifier = Modifier
                             .height(48.dp)
                             .testTag("retry_log_button_${entry.id}")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
-                            contentDescription = "تطبیق مجدد",
+                            contentDescription = "تلاش مجدد دستی",
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("بررسی مجدد")
+                        Text(
+                            text = if (!entry.lastError.isNullOrBlank()) "تلاش مجدد دستی" else "بررسی مجدد",
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }

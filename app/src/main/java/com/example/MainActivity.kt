@@ -28,11 +28,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.AccountBalance
 import androidx.compose.material.icons.outlined.History
@@ -46,6 +51,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
@@ -82,6 +88,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.SmsRecord
 import com.example.ui.AsisViewModel
 import com.example.ui.BanksScreen
 import com.example.ui.HomeScreen
@@ -161,7 +168,40 @@ fun AsisAppScreen(
     var hasNotificationPermission by remember {
         mutableStateOf(checkNotificationPermissionGranted(context))
     }
+    var isIgnoringBatteryOptimizations by remember {
+        mutableStateOf(checkBatteryOptimizationIgnored(context))
+    }
     var didAutoPromptPermissions by rememberSaveable { mutableStateOf(false) }
+    var didAutoPromptBatteryOpt by rememberSaveable { mutableStateOf(false) }
+
+    val batteryOptimizationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        isIgnoringBatteryOptimizations = checkBatteryOptimizationIgnored(context)
+    }
+
+    val requestIgnoreBatteryOptimizations = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !checkBatteryOptimizationIgnored(context)) {
+            val directIntent = android.content.Intent(
+                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                android.net.Uri.parse("package:${context.packageName}")
+            )
+            val launched = runCatching {
+                batteryOptimizationLauncher.launch(directIntent)
+                true
+            }.getOrDefault(false)
+
+            if (!launched) {
+                runCatching {
+                    val fallbackIntent = android.content.Intent(
+                        android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS
+                    )
+                    batteryOptimizationLauncher.launch(fallbackIntent)
+                }
+            }
+        }
+        Unit
+    }
 
     val permissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -169,8 +209,13 @@ fun AsisAppScreen(
         val smsGrantedNow = checkSmsPermissionsGranted(context)
         hasSmsPermissions = smsGrantedNow
         hasNotificationPermission = checkNotificationPermissionGranted(context)
+        isIgnoringBatteryOptimizations = checkBatteryOptimizationIgnored(context)
         if (smsGrantedNow) {
             asisViewModel.onSmsPermissionsGranted()
+        }
+        if (!isIgnoringBatteryOptimizations && !didAutoPromptBatteryOpt) {
+            didAutoPromptBatteryOpt = true
+            requestIgnoreBatteryOptimizations()
         }
     }
 
@@ -194,11 +239,16 @@ fun AsisAppScreen(
                 val nowGranted = checkSmsPermissionsGranted(context)
                 hasSmsPermissions = nowGranted
                 hasNotificationPermission = checkNotificationPermissionGranted(context)
+                isIgnoringBatteryOptimizations = checkBatteryOptimizationIgnored(context)
                 if (!wasGranted && nowGranted) {
                     asisViewModel.onSmsPermissionsGranted()
-                } else if (!nowGranted && !didAutoPromptPermissions) {
+                }
+                if (!nowGranted && !didAutoPromptPermissions) {
                     didAutoPromptPermissions = true
                     requestAllNeededPermissions()
+                } else if (nowGranted && !isIgnoringBatteryOptimizations && !didAutoPromptBatteryOpt) {
+                    didAutoPromptBatteryOpt = true
+                    requestIgnoreBatteryOptimizations()
                 }
             }
         }
@@ -328,36 +378,108 @@ fun AsisAppScreen(
             },
             bottomBar = {
                 if (!useNavRail) {
-                    Column {
-                        HorizontalDivider(
-                            thickness = 1.dp,
-                            color = MaterialTheme.colorScheme.outlineVariant
-                        )
-                        NavigationBar(
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            tonalElevation = 0.dp,
-                            windowInsets = WindowInsets.navigationBars
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.TopCenter
+                    ) {
+                        Column {
+                            HorizontalDivider(
+                                thickness = 1.dp,
+                                color = Color(0xFF2D3545)
+                            )
+                            NavigationBar(
+                                containerColor = Color(0xFF141821),
+                                tonalElevation = 0.dp,
+                                windowInsets = WindowInsets.navigationBars
+                            ) {
+                                val firstPair = listOf(AsisTab.HOME, AsisTab.LOGS)
+                                val secondPair = listOf(AsisTab.BANKS, AsisTab.SETTINGS)
+
+                                for (tab in firstPair) {
+                                    val selected = currentTab == tab
+                                    NavigationBarItem(
+                                        selected = selected,
+                                        onClick = { currentTab = tab },
+                                        modifier = Modifier.testTag("nav_tab_${tab.route}"),
+                                        colors = NavigationBarItemDefaults.colors(
+                                            selectedIconColor = Color(0xFF3B82F6),
+                                            selectedTextColor = Color(0xFF3B82F6),
+                                            indicatorColor = Color(0xFF3B82F6).copy(alpha = 0.14f),
+                                            unselectedIconColor = Color(0xFF8E98A8),
+                                            unselectedTextColor = Color(0xFF8E98A8)
+                                        ),
+                                        icon = {
+                                            NavTabIcon(
+                                                tab = tab,
+                                                selected = selected,
+                                                badgeCount = badgeCount,
+                                                hasErrors = failedCount > 0
+                                            )
+                                        },
+                                        label = {
+                                            Text(
+                                                text = stringResource(id = tab.titleRes),
+                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                            )
+                                        }
+                                    )
+                                }
+
+                                // Center spacer for the overlapping circular power toggle button
+                                Spacer(modifier = Modifier.weight(0.65f))
+
+                                for (tab in secondPair) {
+                                    val selected = currentTab == tab
+                                    NavigationBarItem(
+                                        selected = selected,
+                                        onClick = { currentTab = tab },
+                                        modifier = Modifier.testTag("nav_tab_${tab.route}"),
+                                        colors = NavigationBarItemDefaults.colors(
+                                            selectedIconColor = Color(0xFF3B82F6),
+                                            selectedTextColor = Color(0xFF3B82F6),
+                                            indicatorColor = Color(0xFF3B82F6).copy(alpha = 0.14f),
+                                            unselectedIconColor = Color(0xFF8E98A8),
+                                            unselectedTextColor = Color(0xFF8E98A8)
+                                        ),
+                                        icon = {
+                                            NavTabIcon(
+                                                tab = tab,
+                                                selected = selected,
+                                                badgeCount = badgeCount,
+                                                hasErrors = failedCount > 0
+                                            )
+                                        },
+                                        label = {
+                                            Text(
+                                                text = stringResource(id = tab.titleRes),
+                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                            )
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        // Prominent circular orange/emerald power toggle button overlapping the center of the bottom bar
+                        Surface(
+                            shape = CircleShape,
+                            color = if (settings.serviceEnabled) Color(0xFFF59E0B) else Color(0xFF475569),
+                            border = BorderStroke(4.dp, Color(0xFF141821)),
+                            shadowElevation = 6.dp,
+                            modifier = Modifier
+                                .offset(y = (-14).dp)
+                                .size(54.dp)
+                                .clickable {
+                                    asisViewModel.setServiceEnabled(!settings.serviceEnabled)
+                                }
+                                .testTag("bottom_bar_power_toggle")
                         ) {
-                            for (tab in AsisTab.entries) {
-                                val selected = currentTab == tab
-                                NavigationBarItem(
-                                    selected = selected,
-                                    onClick = { currentTab = tab },
-                                    modifier = Modifier.testTag("nav_tab_${tab.route}"),
-                                    icon = {
-                                        NavTabIcon(
-                                            tab = tab,
-                                            selected = selected,
-                                            badgeCount = badgeCount,
-                                            hasErrors = failedCount > 0
-                                        )
-                                    },
-                                    label = {
-                                        Text(
-                                            text = stringResource(id = tab.titleRes),
-                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
-                                        )
-                                    }
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Filled.PowerSettingsNew,
+                                    contentDescription = "روشن/خاموش کردن سرویس",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(26.dp)
                                 )
                             }
                         }
@@ -415,27 +537,42 @@ fun AsisAppScreen(
                         label = "tabTransition"
                     ) { tab ->
                         when (tab) {
-                            AsisTab.HOME -> HomeScreen(
-                                settings = settings,
-                                isOnline = isOnline,
-                                hasSmsPermissions = hasSmsPermissions,
-                                hasNotificationPermission = hasNotificationPermission,
-                                queueCount = queueCount,
-                                sentCount = sentCount,
-                                failedCount = failedCount,
-                                lastSentLog = lastSentLog,
-                                onToggleService = asisViewModel::setServiceEnabled,
-                                onRequestPermissions = requestAllNeededPermissions,
-                                onFlushQueue = asisViewModel::flushQueueNow,
-                                onSimulateSms = asisViewModel::enqueueSimulatedBankSms,
-                                onNavigateToSettings = { currentTab = AsisTab.SETTINGS },
-                                onNavigateToLogs = { currentTab = AsisTab.LOGS }
-                            )
+                            AsisTab.HOME -> {
+                                val errorLogs = remember(allLogs) {
+                                    allLogs.filter {
+                                        !it.lastError.isNullOrBlank() ||
+                                            it.statusEnum == com.example.data.SmsStatus.FAILED ||
+                                            (it.statusEnum == com.example.data.SmsStatus.RETRY && it.attempts > 0)
+                                    }
+                                }
+                                HomeScreen(
+                                    settings = settings,
+                                    isOnline = isOnline,
+                                    hasSmsPermissions = hasSmsPermissions,
+                                    hasNotificationPermission = hasNotificationPermission,
+                                    isIgnoringBatteryOptimizations = isIgnoringBatteryOptimizations,
+                                    queueCount = queueCount,
+                                    sentCount = sentCount,
+                                    failedCount = failedCount,
+                                    lastSentLog = lastSentLog,
+                                    onToggleService = asisViewModel::setServiceEnabled,
+                                    onRequestPermissions = requestAllNeededPermissions,
+                                    onRequestIgnoreBatteryOptimizations = requestIgnoreBatteryOptimizations,
+                                    onFlushQueue = asisViewModel::flushQueueNow,
+                                    onSimulateSms = asisViewModel::enqueueSimulatedBankSms,
+                                    onNavigateToSettings = { currentTab = AsisTab.SETTINGS },
+                                    onNavigateToLogs = { currentTab = AsisTab.LOGS },
+                                    errorLogs = errorLogs,
+                                    onRetrySingleLog = asisViewModel::retrySingleLog,
+                                    onRetryAllFailed = asisViewModel::retryAllFailedLogs
+                                )
+                            }
 
                             AsisTab.LOGS -> LogsScreen(
                                 logs = allLogs,
                                 onApproveManually = asisViewModel::approveRecordManually,
                                 onRetrySingle = asisViewModel::retrySingleLog,
+                                onRetryAllFailed = asisViewModel::retryAllFailedLogs,
                                 onClearAllLogs = asisViewModel::clearAllLogs
                             )
 
@@ -443,7 +580,10 @@ fun AsisAppScreen(
                                 settings = settings,
                                 onToggleFilterEnabled = asisViewModel::setFilterBanksEnabled,
                                 onToggleBank = asisViewModel::toggleBankSelection,
-                                onSelectAllBanks = asisViewModel::selectAllBanks
+                                onSelectAllBanks = asisViewModel::selectAllBanks,
+                                onAddRegisteredBank = asisViewModel::addRegisteredBankCard,
+                                onRemoveRegisteredBank = asisViewModel::removeRegisteredBankCard,
+                                onLoadReceivedSenders = asisViewModel::loadReceivedSmsSenders
                             )
 
                             AsisTab.SETTINGS -> SettingsScreen(
@@ -515,6 +655,15 @@ private fun checkNotificationPermissionGranted(context: android.content.Context)
             context,
             Manifest.permission.POST_NOTIFICATIONS
         ) == PackageManager.PERMISSION_GRANTED
+    } else {
+        true
+    }
+}
+
+internal fun checkBatteryOptimizationIgnored(context: android.content.Context): Boolean {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+        pm?.isIgnoringBatteryOptimizations(context.packageName) ?: true
     } else {
         true
     }

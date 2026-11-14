@@ -73,6 +73,9 @@ interface LogDao {
     @Query("DELETE FROM sms_records WHERE storedMs < :cutoffMs")
     suspend fun deleteOlderThan(cutoffMs: Long): Int
 
+    @Query("UPDATE sms_records SET status = 'NEW', lastError = NULL WHERE status IN ('FAILED', 'RETRY') AND amountMinor IS NOT NULL AND reason != 'test_deposit_not_sent'")
+    suspend fun resetFailedAndErrorLogsForRetry(): Int
+
     @Query("DELETE FROM sms_records")
     suspend fun clearAllLogs()
 }

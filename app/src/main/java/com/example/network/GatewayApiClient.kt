@@ -270,7 +270,7 @@ object GatewayApiClient {
         } catch (e: IOException) {
             PendingFetchResult.RetryableError(
                 null,
-                "عدم دسترسی به شبکه (${e.javaClass.simpleName})."
+                describeNetworkException(e)
             )
         } catch (e: Exception) {
             PendingFetchResult.RetryableError(
@@ -278,6 +278,19 @@ object GatewayApiClient {
                 "خطای ارتباط با سرور: ${e.localizedMessage ?: "نامشخص"}"
             )
         }
+    }
+
+    fun describeNetworkException(e: Throwable): String = when (e) {
+        is java.net.UnknownHostException ->
+            "عدم اتصال به اینترنت یا خطای DNS (آدرس سرور یافت نشد)"
+        is java.net.SocketTimeoutException ->
+            "پایان مهلت اتصال به سرور (Timeout / کندی یا قطعی اینترنت)"
+        is java.net.ConnectException ->
+            "عدم امکان برقراری اتصال با سرور (اینترنت قطع است یا سرور پاسخ نمی‌دهد)"
+        is javax.net.ssl.SSLException ->
+            "خطای امنیتی گواهی SSL/HTTPS در ارتباط با سرور"
+        else ->
+            "خطای شبکه و عدم دسترسی به سرور (${e.javaClass.simpleName})"
     }
 
     /**

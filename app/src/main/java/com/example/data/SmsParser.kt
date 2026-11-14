@@ -73,6 +73,17 @@ object SmsParser {
 
     private val INVISIBLE = "\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u00a0\ufeff".toSet()
 
+    @Volatile
+    private var customSenderToBankCode: Map<String, String> = mapOf(
+        "b.qmehriran" to "mehr"
+    )
+
+    fun updateCustomBankSenders(mappings: Map<String, String>) {
+        customSenderToBankCode = mappings.entries.associate { (k, v) ->
+            k.trim().lowercase(Locale.ROOT) to v.trim()
+        } + ("b.qmehriran" to "mehr")
+    }
+
     val KNOWN_BANKS: List<BankInfo> = listOf(
         // بانک‌های دولتی، تجاری و تخصصی
         BankInfo(
@@ -324,6 +335,12 @@ object SmsParser {
             bodyKeywords = listOf("بلوبانک", "بلو بانک", "حساب بلو", "بلو")
         ),
         BankInfo(
+            code = "blu_pol",
+            titleFa = "بلوبانک حالت پل",
+            senderKeywords = listOf("blupol", "98200084211", "200084211"),
+            bodyKeywords = listOf("بلوبانک حالت پل", "حالت پل بلو")
+        ),
+        BankInfo(
             code = "wepod",
             titleFa = "ویپاد (پاسارگاد)",
             senderKeywords = listOf("wepod", "9820008881", "20008881"),
@@ -380,7 +397,7 @@ object SmsParser {
     )
 
     private val NEOBANK_CODES = setOf(
-        "blu", "wepod", "zypod", "bankino", "abank", "tobank", "hibank", "omidbank", "qbank", "lenz"
+        "blu", "blu_pol", "wepod", "zypod", "bankino", "abank", "tobank", "hibank", "omidbank", "qbank", "lenz"
     )
 
     private fun mapChar(c: Char): Char = when (c) {
@@ -449,6 +466,19 @@ object SmsParser {
     fun detectBank(sender: String?, body: String?): BankInfo {
         val cleanSender = (sender ?: "").trim().lowercase(Locale.ROOT)
         val cleanBody = normalize(body).lowercase(Locale.ROOT)
+
+        // ۰. بررسی سرشماره‌های تعریف‌شده توسط کاربر در بخش «بانک‌های تعریف شده»
+        if (cleanSender.isNotEmpty()) {
+            val strippedCustom = cleanSender.removePrefix("+").removePrefix("0098").removePrefix("98")
+            val customCode = customSenderToBankCode[cleanSender]
+                ?: customSenderToBankCode.entries.firstOrNull { (k, _) ->
+                    val strippedK = k.removePrefix("+").removePrefix("0098").removePrefix("98")
+                    strippedCustom.isNotEmpty() && strippedCustom == strippedK
+                }?.value
+            if (customCode != null) {
+                KNOWN_BANKS.firstOrNull { it.code == customCode }?.let { return it }
+            }
+        }
 
         // ۱. اگر متن پیامک صراحتاً نام یکی از نئوبانک‌ها را دارد (که گاه از سرشمارهٔ بانک مادر ارسال می‌شوند)
         if (cleanBody.isNotEmpty()) {

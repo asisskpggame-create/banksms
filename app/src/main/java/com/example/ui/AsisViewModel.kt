@@ -294,17 +294,55 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
 
     fun retrySingleLog(entry: SmsRecord) {
         viewModelScope.launch {
-            val nextStatus = if (entry.amountMinor != null && entry.reason != "test_deposit_not_sent") SmsStatus.NEW else SmsStatus.IGNORED
-            logDao.update(
-                entry.copy(
-                    status = nextStatus.name,
-                    lastError = null
+            val isDeposit = entry.amountMinor != null && entry.reason != "test_deposit_not_sent"
+            if (!isDeposit) {
+                logDao.update(entry.copy(status = SmsStatus.IGNORED.name, lastError = null))
+                return@launch
+            }
+
+            _snackbarMessage.value = "در حال تلاش مجدد برای ارسال به سرور..."
+            if (!entry.matchedId.isNullOrBlank() && entry.matchedKind != "sms-in") {
+                logDao.update(
+                    entry.copy(
+                        status = SmsStatus.RETRY.name,
+                        lastError = null
+                    )
                 )
-            )
-            if (nextStatus == SmsStatus.NEW) {
-                _snackbarMessage.value = "بررسی و تطبیق مجدد با سرور آغاز شد."
+                ForwardWorker.runManualApproveNow(appContext, entry.id)
+            } else {
+                logDao.update(
+                    entry.copy(
+                        status = SmsStatus.NEW.name,
+                        lastError = null
+                    )
+                )
                 ForwardWorker.runSweepNow(appContext)
             }
+
+            val updated = logDao.getById(entry.id)
+            when {
+                updated?.statusEnum == SmsStatus.MATCHED -> {
+                    _snackbarMessage.value = "ارسال مجدد با موفقیت انجام شد و واریز تأیید گردید."
+                }
+                !updated?.lastError.isNullOrBlank() -> {
+                    _snackbarMessage.value = "خطا در ارسال مجدد: ${updated?.lastError}"
+                }
+                else -> {
+                    _snackbarMessage.value = "بررسی مجدد با سرور انجام شد (در انتظار سفارش متناظر)."
+                }
+            }
+        }
+    }
+
+    fun retryAllFailedLogs() {
+        viewModelScope.launch {
+            val resetCount = logDao.resetFailedAndErrorLogsForRetry()
+            _snackbarMessage.value = if (resetCount > 0) {
+                "در حال تلاش مجدد برای ارسال $resetCount پیامک ناموفق به سرور..."
+            } else {
+                "در حال بررسی و ارسال مجدد صف به سرور..."
+            }
+            ForwardWorker.runSweepNow(appContext)
         }
     }
 
@@ -345,6 +383,64 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectAllBanks(selectAll: Boolean) {
         settingsRepo.selectAllBanks(selectAll)
+    }
+
+    fun addRegisteredBankCard(bankCode: String, bankTitle: String, senderNumber: String) {
+        val cleanSender = senderNumber.trim()
+        if (bankCode.isBlank() || cleanSender.isBlank()) {
+            _snackbarMessage.value = "لطفاً هم بانک و هم سرشماره پیامک را مشخص کنید."
+            return
+        }
+        settingsRepo.addRegisteredBankCard(bankCode, bankTitle, cleanSender)
+        _snackbarMessage.value = "$bankTitle با سرشماره $cleanSender ثبت شد."
+    }
+
+    fun removeRegisteredBankCard(cardId: String) {
+        settingsRepo.removeRegisteredBankCard(cardId)
+        _snackbarMessage.value = "بانک از لیست حذف شد."
+    }
+
+    fun loadReceivedSmsSenders(): List<String> {
+        val inboxSenders = runCatching {
+            val result = LinkedHashSet<String>()
+            appContext.contentResolver.query(
+                android.provider.Telephony.Sms.Inbox.CONTENT_URI,
+                arrayOf(android.provider.Telephony.Sms.ADDRESS),
+                null,
+                null,
+                "${android.provider.Telephony.Sms.DATE} DESC"
+            )?.use { cursor ->
+                val addrIdx = cursor.getColumnIndex(android.provider.Telephony.Sms.ADDRESS)
+                var count = 0
+                while (cursor.moveToNext() && count < 60) {
+                    val addr = if (addrIdx >= 0) cursor.getString(addrIdx)?.trim().orEmpty() else ""
+                    if (addr.isNotEmpty()) {
+                        result.add(addr)
+                        count++
+                    }
+                }
+            }
+            result.toList()
+        }.getOrDefault(emptyList())
+
+        val fallbackSampleSenders = listOf(
+            "HamraheMan",
+            "+989999987641",
+            "B.QMEHRIRAN",
+            "+989373534023",
+            "+989998622172",
+            "+9830009014",
+            "+989229012524",
+            "MCI Club",
+            "MCI Offers",
+            "+9850003000300",
+            "+9850003223",
+            "+9820008580",
+            "E-Charge",
+            ".IRANCELL.",
+            "+989019932340"
+        )
+        return (inboxSenders + fallbackSampleSenders).distinct()
     }
 
     companion object {

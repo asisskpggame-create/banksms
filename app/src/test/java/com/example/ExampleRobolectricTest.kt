@@ -39,6 +39,17 @@ class ExampleRobolectricTest {
         val vm = AsisViewModel.provideFactory(app).create(AsisViewModel::class.java)
         assertNotNull(vm.settingsState.value)
 
+        // Verify Mirza 33-bank catalog and default pre-populated "بانک قرض الحسنه" (B.QMEHRIRAN) card
+        assertEquals(33, com.example.ui.BankVisualCatalog.MIRZA_BANKS.size)
+        val initialCards = repo.readSettings().registeredBankCards
+        assertTrue(initialCards.any { it.senderNumber == "B.QMEHRIRAN" && it.bankTitle == "بانک قرض الحسنه" })
+
+        // Verify adding a custom bank sender card updates SmsParser custom sender detection
+        vm.addRegisteredBankCard("mellat", "بانک ملت", "98300017")
+        val updatedCards = repo.readSettings().registeredBankCards
+        assertTrue(updatedCards.any { it.senderNumber == "98300017" && it.bankCode == "mellat" })
+        assertEquals("mellat", com.example.data.SmsParser.detectBank("98300017", "").code)
+
         // Verify WorkManager OneTimeWorkRequest builders do not throw IllegalArgumentException
         ForwardWorker.enqueueMatcherSweep(context)
         ForwardWorker.enqueueManualApprove(context, recordId = 1L)
@@ -63,6 +74,13 @@ class ExampleRobolectricTest {
     fun `verify SMS permissions, SmsReceiver registration, and forwarding ingestion`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val pm = app.packageManager
+
+        val pkgInfo = pm.getPackageInfo(app.packageName, android.content.pm.PackageManager.GET_PERMISSIONS)
+        val requestedPerms = pkgInfo.requestedPermissions?.toList().orEmpty()
+        assertTrue(
+            "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS must be declared in AndroidManifest.xml",
+            requestedPerms.contains(android.Manifest.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+        )
 
         val smsIntent = android.content.Intent(android.provider.Telephony.Sms.Intents.SMS_RECEIVED_ACTION)
         smsIntent.setPackage(app.packageName)
@@ -110,6 +128,31 @@ class ExampleRobolectricTest {
             assertEquals("NEW", saved?.status)
             assertEquals(50_000_000L, saved?.amountMinor)
             assertEquals("بانک ملت", saved?.bankTitle)
+
+            // Verify failure reason logging (e.g., no connection) and manual retry reset
+            val offlineReason = com.example.network.GatewayApiClient.describeNetworkException(
+                java.net.UnknownHostException("Unable to resolve host")
+            )
+            assertTrue(offlineReason.contains("عدم اتصال به اینترنت"))
+
+            val recordId = saved!!.id
+            db.logDao().update(
+                saved.copy(
+                    status = com.example.data.SmsStatus.FAILED.name,
+                    attempts = 1,
+                    httpCode = 0,
+                    lastError = offlineReason
+                )
+            )
+            val failedRec = db.logDao().getById(recordId)
+            assertEquals(com.example.data.SmsStatus.FAILED.name, failedRec?.status)
+            assertEquals(offlineReason, failedRec?.lastError)
+
+            val resetCount = db.logDao().resetFailedAndErrorLogsForRetry()
+            assertEquals(1, resetCount)
+            val retriedRec = db.logDao().getById(recordId)
+            assertEquals(com.example.data.SmsStatus.NEW.name, retriedRec?.status)
+            org.junit.Assert.assertNull(retriedRec?.lastError)
         }
     }
 }

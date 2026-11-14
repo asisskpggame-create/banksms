@@ -106,16 +106,35 @@ fun HomeScreen(
     onSimulateSms: (sender: String, body: String) -> Unit,
     onNavigateToSettings: () -> Unit,
     onNavigateToLogs: () -> Unit,
+    isIgnoringBatteryOptimizations: Boolean? = null,
+    onRequestIgnoreBatteryOptimizations: (() -> Unit)? = null,
+    errorLogs: List<SmsRecord> = emptyList(),
+    onRetrySingleLog: (SmsRecord) -> Unit = {},
+    onRetryAllFailed: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     var showSimulateDialog by rememberSaveable { mutableStateOf(false) }
 
     val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as? PowerManager
-    val isIgnoringBatteryOptimizations = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+    val batteryOptIgnored = isIgnoringBatteryOptimizations ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
         powerManager?.isIgnoringBatteryOptimizations(context.packageName) ?: true
     } else {
         true
+    }
+
+    val requestBatteryExemption: () -> Unit = onRequestIgnoreBatteryOptimizations ?: {
+        runCatching {
+            val intent = Intent(
+                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                Uri.parse("package:${context.packageName}")
+            )
+            context.startActivity(intent)
+        }.onFailure {
+            runCatching {
+                context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            }
+        }
     }
 
     Column(
@@ -155,6 +174,69 @@ fun HomeScreen(
             )
         }
 
+        // Battery Optimization Exemption Banner for uninterrupted background SMS forwarding
+        AnimatedVisibility(
+            visible = !batteryOptIgnored,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()
+        ) {
+            AsisElevatedCard(
+                modifier = Modifier.testTag("battery_optimization_card"),
+                containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f),
+                borderColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.4f)
+            ) {
+                SectionHeader(
+                    icon = Icons.Default.BatteryChargingFull,
+                    title = "معافیت از بهینه‌سازی باتری (ضروری برای پس‌زمینه)",
+                    subtitle = "جلوگیری از توقف سرویس ارسال پیامک توسط سیستم‌عامل",
+                    tint = MaterialTheme.colorScheme.tertiary
+                )
+                Text(
+                    text = "برای اینکه در حالت صفحه خاموش یا قفل بودن گوشی، پیامک‌های واریز بانکی بدون تأخیر دریافت و توسط WorkManager به سرور ارسال شوند، اجازهٔ فعالیت بدون محدودیت باتری را تایید کنید.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = requestBatteryExemption,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("ignore_battery_opt_button"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.tertiary,
+                            contentColor = MaterialTheme.colorScheme.onTertiary
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.BatteryChargingFull,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("غیرفعال کردن بهینه‌سازی باتری", fontWeight = FontWeight.Bold)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            runCatching {
+                                context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                            }
+                        },
+                        modifier = Modifier
+                            .height(48.dp)
+                            .testTag("open_battery_settings_button"),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("لیست برنامه‌ها")
+                    }
+                }
+            }
+        }
+
         // Live Queue & Delivery Metrics Strip
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -192,6 +274,20 @@ fun HomeScreen(
                     .weight(1f)
                     .testTag("stat_failed_card")
                     .clickable(onClick = onNavigateToLogs)
+            )
+        }
+
+        // Failed Send Error Log & Manual Retry Card
+        AnimatedVisibility(
+            visible = errorLogs.isNotEmpty(),
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()
+        ) {
+            FailedDeliveryErrorLogCard(
+                errorLogs = errorLogs,
+                onRetrySingleLog = onRetrySingleLog,
+                onRetryAllFailed = onRetryAllFailed,
+                onViewAllLogs = onNavigateToLogs
             )
         }
 
@@ -256,49 +352,6 @@ fun HomeScreen(
             lastMatchedLog = lastSentLog,
             onViewAllLogs = onNavigateToLogs
         )
-
-        // Battery Optimization Card for background reliability
-        if (!isIgnoringBatteryOptimizations) {
-            AsisElevatedCard(
-                modifier = Modifier.testTag("battery_optimization_card"),
-                containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f),
-                borderColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f)
-            ) {
-                SectionHeader(
-                    icon = Icons.Default.BatteryChargingFull,
-                    title = "عدم محدودیت باتری پس‌زمینه",
-                    subtitle = "توصیه‌شده برای Xiaomi / Samsung / Huawei",
-                    tint = MaterialTheme.colorScheme.tertiary
-                )
-                Text(
-                    text = "برای اطمینان از اینکه در حالت صفحه خاموش، پیامک‌های واریز بلافاصله پارس و با سرور تطبیق داده شوند، محدودیت باتری را برای برنامه غیرفعال کنید.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                OutlinedButton(
-                    onClick = {
-                        runCatching {
-                            val intent = Intent(
-                                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                                Uri.parse("package:${context.packageName}")
-                            )
-                            context.startActivity(intent)
-                        }.onFailure {
-                            runCatching {
-                                context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                            }
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .testTag("ignore_battery_opt_button"),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("غیرفعال کردن بهینه‌سازی باتری")
-                }
-            }
-        }
 
         // Security & Privacy Footer Card
         Surface(
@@ -877,6 +930,189 @@ private fun LastMatchedSummaryCard(
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FailedDeliveryErrorLogCard(
+    errorLogs: List<SmsRecord>,
+    onRetrySingleLog: (SmsRecord) -> Unit,
+    onRetryAllFailed: () -> Unit,
+    onViewAllLogs: () -> Unit
+) {
+    AsisElevatedCard(
+        modifier = Modifier.testTag("home_failed_logs_card"),
+        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.28f),
+        borderColor = MaterialTheme.colorScheme.error.copy(alpha = 0.45f)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.16f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ErrorOutline,
+                        contentDescription = "خطا در ارسال به سرور",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Column {
+                    Text(
+                        text = "لاگ خطاهای ارسال به سرور (${errorLogs.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "علت شکست در ارسال و امکان تلاش مجدد دستی",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            FilledTonalButton(
+                onClick = onRetryAllFailed,
+                modifier = Modifier
+                    .height(48.dp)
+                    .testTag("home_retry_all_button"),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer
+                ),
+                contentPadding = PaddingValues(horizontal = 12.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = "تلاش مجدد همه",
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("تلاش مجدد همه", fontWeight = FontWeight.Bold)
+            }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            errorLogs.take(3).forEach { rec ->
+                val timeStr = rememberFormattedTime(rec.receivedMs)
+                val reasonText = rec.lastError?.takeIf { it.isNotBlank() }
+                    ?: "خطا در برقراری ارتباط با سرور (عدم اتصال یا پاسخ نامعتبر)"
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("home_failed_log_item_${rec.id}")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = buildString {
+                                    append(rec.bankTitle.ifBlank { rec.bank })
+                                    if (rec.amountMinor != null) {
+                                        append(" • ")
+                                        append(SmsParser.formatToman(rec.amountMinor))
+                                        append(" تومان")
+                                    }
+                                },
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "تلاش #${rec.attempts} • $timeStr",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ErrorOutline,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .padding(top = 2.dp)
+                            )
+                            Text(
+                                text = "علت خطا: $reasonText",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            Button(
+                                onClick = { onRetrySingleLog(rec) },
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .testTag("home_retry_log_button_${rec.id}"),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError
+                                ),
+                                contentPadding = PaddingValues(horizontal = 14.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "تلاش مجدد دستی",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("تلاش مجدد دستی", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (errorLogs.size > 3) {
+                TextButton(
+                    onClick = onViewAllLogs,
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("مشاهده همه ${errorLogs.size} خطای ارسال در بخش لاگ‌ها")
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
                     )
                 }
             }

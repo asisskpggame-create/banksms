@@ -7,6 +7,15 @@ import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONArray
+import org.json.JSONObject
+
+data class RegisteredBankCard(
+    val id: String,
+    val bankCode: String,
+    val bankTitle: String,
+    val senderNumber: String
+)
 
 data class GatewaySettings(
     val endpointUrl: String = "",
@@ -16,6 +25,7 @@ data class GatewaySettings(
     val localMaxToman: Long = 0L,          // ۰ یعنی استفاده از auto_max_toman سرور
     val filterBanksEnabled: Boolean = false,
     val selectedBankCodes: Set<String> = SmsParser.KNOWN_BANKS.map { it.code }.toSet(),
+    val registeredBankCards: List<RegisteredBankCard> = DEFAULT_REGISTERED_BANK_CARDS,
     val lastTokenError: String? = null,
     val lastClockOffsetMs: Long = 0L,
     val lastServerWindowHours: Int = 24,
@@ -56,7 +66,19 @@ data class GatewaySettings(
     override fun toString(): String =
         "GatewaySettings(endpointUrl=$endpointUrl, gatewayToken=***, serviceEnabled=$serviceEnabled, " +
             "autoApproveInApp=$autoApproveInApp, localMaxToman=$localMaxToman, " +
-            "filterBanksEnabled=$filterBanksEnabled, selectedBankCodes=${selectedBankCodes.size} banks)"
+            "filterBanksEnabled=$filterBanksEnabled, selectedBankCodes=${selectedBankCodes.size} banks, " +
+            "registeredBankCards=${registeredBankCards.size})"
+
+    companion object {
+        val DEFAULT_REGISTERED_BANK_CARDS: List<RegisteredBankCard> = listOf(
+            RegisteredBankCard(
+                id = "default_mehr_iran",
+                bankCode = "mehr",
+                bankTitle = "بانک قرض الحسنه",
+                senderNumber = "B.QMEHRIRAN"
+            )
+        )
+    }
 }
 
 /**
@@ -87,12 +109,57 @@ class SettingsRepo private constructor(context: Context) {
         }
     }
 
+    private fun parseRegisteredBankCards(rawJson: String?): List<RegisteredBankCard> {
+        if (rawJson == null) return GatewaySettings.DEFAULT_REGISTERED_BANK_CARDS
+        return runCatching {
+            val arr = JSONArray(rawJson)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val id = obj.optString("id").trim()
+                    val code = obj.optString("bankCode").trim()
+                    val title = obj.optString("bankTitle").trim()
+                    val sender = obj.optString("senderNumber").trim()
+                    if (code.isNotEmpty() && sender.isNotEmpty()) {
+                        add(
+                            RegisteredBankCard(
+                                id = id.ifEmpty { "${code}_${sender}_$i" },
+                                bankCode = code,
+                                bankTitle = title.ifEmpty { code },
+                                senderNumber = sender
+                            )
+                        )
+                    }
+                }
+            }
+        }.getOrDefault(GatewaySettings.DEFAULT_REGISTERED_BANK_CARDS)
+    }
+
+    private fun serializeRegisteredBankCards(cards: List<RegisteredBankCard>): String {
+        val arr = JSONArray()
+        for (c in cards) {
+            val obj = JSONObject()
+                .put("id", c.id)
+                .put("bankCode", c.bankCode)
+                .put("bankTitle", c.bankTitle)
+                .put("senderNumber", c.senderNumber)
+            arr.put(obj)
+        }
+        return arr.toString()
+    }
+
     fun readSettings(): GatewaySettings {
         val defaultBanks = runCatching {
             SmsParser.KNOWN_BANKS.map { it.code }.toSet()
         }.getOrDefault(emptySet())
         return try {
             val savedBanks = prefs.getStringSet(KEY_SELECTED_BANKS, null) ?: defaultBanks
+            val cards = parseRegisteredBankCards(prefs.getString(KEY_REGISTERED_BANK_CARDS, null))
+            runCatching {
+                SmsParser.updateCustomBankSenders(
+                    cards.associate { it.senderNumber to it.bankCode }
+                )
+            }
             GatewaySettings(
                 endpointUrl = prefs.getString(KEY_ENDPOINT_URL, "") ?: "",
                 gatewayToken = prefs.getString(KEY_GATEWAY_TOKEN, "") ?: "",
@@ -101,6 +168,7 @@ class SettingsRepo private constructor(context: Context) {
                 localMaxToman = prefs.getLong(KEY_LOCAL_MAX_TOMAN, 0L),
                 filterBanksEnabled = prefs.getBoolean(KEY_FILTER_BANKS_ENABLED, false),
                 selectedBankCodes = savedBanks,
+                registeredBankCards = cards,
                 lastTokenError = prefs.getString(KEY_LAST_TOKEN_ERROR, null),
                 lastClockOffsetMs = prefs.getLong(KEY_LAST_CLOCK_OFFSET_MS, 0L),
                 lastServerWindowHours = prefs.getInt(KEY_LAST_SERVER_WINDOW_HOURS, 24),
@@ -109,6 +177,38 @@ class SettingsRepo private constructor(context: Context) {
         } catch (_: Throwable) {
             GatewaySettings(selectedBankCodes = defaultBanks)
         }
+    }
+
+    fun addRegisteredBankCard(bankCode: String, bankTitle: String, senderNumber: String): RegisteredBankCard {
+        val cleanSender = senderNumber.trim()
+        val current = readSettings().registeredBankCards.toMutableList()
+        val existingIdx = current.indexOfFirst {
+            it.senderNumber.equals(cleanSender, ignoreCase = true)
+        }
+        val card = RegisteredBankCard(
+            id = "${bankCode}_${cleanSender.lowercase()}_${System.currentTimeMillis()}",
+            bankCode = bankCode,
+            bankTitle = bankTitle,
+            senderNumber = cleanSender
+        )
+        if (existingIdx >= 0) {
+            current[existingIdx] = card
+        } else {
+            current.add(0, card)
+        }
+        prefs.edit()
+            .putString(KEY_REGISTERED_BANK_CARDS, serializeRegisteredBankCards(current))
+            .apply()
+        _settingsFlow.value = readSettings()
+        return card
+    }
+
+    fun removeRegisteredBankCard(cardId: String) {
+        val updated = readSettings().registeredBankCards.filterNot { it.id == cardId }
+        prefs.edit()
+            .putString(KEY_REGISTERED_BANK_CARDS, serializeRegisteredBankCards(updated))
+            .apply()
+        _settingsFlow.value = readSettings()
     }
 
     fun saveEndpointAndToken(endpointUrl: String, token: String, localMaxToman: Long = readSettings().localMaxToman) {
@@ -186,6 +286,7 @@ class SettingsRepo private constructor(context: Context) {
         private const val KEY_LOCAL_MAX_TOMAN = "local_max_toman"
         private const val KEY_FILTER_BANKS_ENABLED = "filter_banks_enabled"
         private const val KEY_SELECTED_BANKS = "selected_bank_codes"
+        private const val KEY_REGISTERED_BANK_CARDS = "registered_bank_cards_json"
         private const val KEY_LAST_TOKEN_ERROR = "last_token_error"
         private const val KEY_LAST_CLOCK_OFFSET_MS = "last_clock_offset_ms"
         private const val KEY_LAST_SERVER_WINDOW_HOURS = "last_server_window_hours"
