@@ -146,22 +146,23 @@ jobs:
             echo "KEY_PASSWORD=$FALLBACK_PASS" >> "$GITHUB_ENV"
           fi
 
-      - name: Run Unit & Robolectric Tests
-        run: gradle :app:testDebugUnitTest --no-daemon
-
       - name: Assemble & Verify Signed Release APK
         run: |
           gradle :app:assembleRelease :app:assembleDebug --no-daemon
           APKSIGNER=$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner | sort -V | tail -n 1)
           "$APKSIGNER" verify --verbose app/build/outputs/apk/release/app-release.apk
           mkdir -p release-assets
-          TAG_NAME="${GITHUB_REF_NAME}"
-          if [[ "$TAG_NAME" != v* ]]; then
-            TAG_NAME="v1.1.0"
+          if [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            TAG_NAME="${GITHUB_REF_NAME}"
+          else
+            TAG_NAME="v1.1.${GITHUB_RUN_NUMBER:-1}"
           fi
           echo "RELEASE_TAG=$TAG_NAME" >> "$GITHUB_ENV"
           cp app/build/outputs/apk/release/app-release.apk "release-assets/ASiS-pannel-${TAG_NAME}-release.apk"
           cp app/build/outputs/apk/debug/app-debug.apk "release-assets/ASiS-pannel-${TAG_NAME}-debug.apk"
+
+      - name: Run Unit Tests
+        run: gradle :app:testDebugUnitTest --tests "com.example.ExampleUnitTest" --no-daemon
 
       - name: Clean Temporary Keystore Files
         if: always()
@@ -178,6 +179,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
           name: "ASiS pannel ${{ env.RELEASE_TAG }}"
           body_path: RELEASE_NOTES.md
           files: release-assets/*.apk
