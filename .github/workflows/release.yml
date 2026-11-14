@@ -155,7 +155,7 @@ jobs:
           if [[ "${GITHUB_REF_NAME}" == v* ]]; then
             TAG_NAME="${GITHUB_REF_NAME}"
           else
-            TAG_NAME="v1.2.${GITHUB_RUN_NUMBER:-1}"
+            TAG_NAME="v1.3.${GITHUB_RUN_NUMBER:-1}"
           fi
           echo "RELEASE_TAG=$TAG_NAME" >> "$GITHUB_ENV"
           cp app/build/outputs/apk/release/app-release.apk "release-assets/ASiS-pannel-${TAG_NAME}-release.apk"
