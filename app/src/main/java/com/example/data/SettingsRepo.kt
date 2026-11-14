@@ -97,15 +97,26 @@ class SettingsRepo private constructor(context: Context) {
             val masterKey = MasterKey.Builder(appContext)
                 .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
                 .build()
-            EncryptedSharedPreferences.create(
+            val encrypted = EncryptedSharedPreferences.create(
                 appContext,
                 PREFS_FILE_NAME,
                 masterKey,
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
+            // Verify keyset can actually read without throwing
+            encrypted.contains(KEY_ENDPOINT_URL)
+            encrypted
         } catch (_: Throwable) {
             appContext.getSharedPreferences("${PREFS_FILE_NAME}_fallback", Context.MODE_PRIVATE)
+        }
+    }
+
+    private inline fun safeEdit(block: SharedPreferences.Editor.() -> Unit) {
+        runCatching {
+            val editor = prefs.edit()
+            editor.block()
+            editor.apply()
         }
     }
 
@@ -196,77 +207,77 @@ class SettingsRepo private constructor(context: Context) {
         } else {
             current.add(0, card)
         }
-        prefs.edit()
-            .putString(KEY_REGISTERED_BANK_CARDS, serializeRegisteredBankCards(current))
-            .apply()
+        safeEdit {
+            putString(KEY_REGISTERED_BANK_CARDS, serializeRegisteredBankCards(current))
+        }
         _settingsFlow.value = readSettings()
         return card
     }
 
     fun removeRegisteredBankCard(cardId: String) {
         val updated = readSettings().registeredBankCards.filterNot { it.id == cardId }
-        prefs.edit()
-            .putString(KEY_REGISTERED_BANK_CARDS, serializeRegisteredBankCards(updated))
-            .apply()
+        safeEdit {
+            putString(KEY_REGISTERED_BANK_CARDS, serializeRegisteredBankCards(updated))
+        }
         _settingsFlow.value = readSettings()
     }
 
     fun saveEndpointAndToken(endpointUrl: String, token: String, localMaxToman: Long = readSettings().localMaxToman) {
         val cleanUrl = com.example.network.GatewayApiClient.cleanCredentialString(endpointUrl)
         val cleanToken = com.example.network.GatewayApiClient.cleanCredentialString(token)
-        prefs.edit()
-            .putString(KEY_ENDPOINT_URL, cleanUrl)
-            .putString(KEY_GATEWAY_TOKEN, cleanToken)
-            .putLong(KEY_LOCAL_MAX_TOMAN, maxOf(0L, localMaxToman))
-            .putString(KEY_LAST_TOKEN_ERROR, null)
-            .apply()
+        safeEdit {
+            putString(KEY_ENDPOINT_URL, cleanUrl)
+            putString(KEY_GATEWAY_TOKEN, cleanToken)
+            putLong(KEY_LOCAL_MAX_TOMAN, maxOf(0L, localMaxToman))
+            putString(KEY_LAST_TOKEN_ERROR, null)
+        }
         _settingsFlow.value = readSettings()
     }
 
     fun setServiceEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_SERVICE_ENABLED, enabled).apply()
+        safeEdit { putBoolean(KEY_SERVICE_ENABLED, enabled) }
         _settingsFlow.value = readSettings()
     }
 
     fun setAutoApproveInApp(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_AUTO_APPROVE_IN_APP, enabled).apply()
+        safeEdit { putBoolean(KEY_AUTO_APPROVE_IN_APP, enabled) }
         _settingsFlow.value = readSettings()
     }
 
     fun setLocalMaxToman(maxToman: Long) {
-        prefs.edit().putLong(KEY_LOCAL_MAX_TOMAN, maxOf(0L, maxToman)).apply()
+        safeEdit { putLong(KEY_LOCAL_MAX_TOMAN, maxOf(0L, maxToman)) }
         _settingsFlow.value = readSettings()
     }
 
     fun updateServerSyncMeta(clockOffsetMs: Long, matchWindowHours: Int, autoMaxToman: Long) {
-        prefs.edit()
-            .putLong(KEY_LAST_CLOCK_OFFSET_MS, clockOffsetMs)
-            .putInt(KEY_LAST_SERVER_WINDOW_HOURS, maxOf(1, matchWindowHours))
-            .putLong(KEY_LAST_SERVER_MAX_TOMAN, maxOf(0L, autoMaxToman))
-            .apply()
+        safeEdit {
+            putLong(KEY_LAST_CLOCK_OFFSET_MS, clockOffsetMs)
+            putInt(KEY_LAST_SERVER_WINDOW_HOURS, maxOf(1, matchWindowHours))
+            putLong(KEY_LAST_SERVER_MAX_TOMAN, maxOf(0L, autoMaxToman))
+        }
         _settingsFlow.value = readSettings()
     }
 
     fun setFilterBanksEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_FILTER_BANKS_ENABLED, enabled).apply()
+        safeEdit { putBoolean(KEY_FILTER_BANKS_ENABLED, enabled) }
         _settingsFlow.value = readSettings()
     }
 
     fun toggleBankSelection(bankCode: String) {
         val current = readSettings().selectedBankCodes.toMutableSet()
         if (current.contains(bankCode)) current.remove(bankCode) else current.add(bankCode)
-        prefs.edit().putStringSet(KEY_SELECTED_BANKS, current).apply()
+        safeEdit { putStringSet(KEY_SELECTED_BANKS, current) }
         _settingsFlow.value = readSettings()
     }
 
     fun selectAllBanks(selectAll: Boolean) {
         val updated = if (selectAll) SmsParser.KNOWN_BANKS.map { it.code }.toSet() else emptySet()
-        prefs.edit().putStringSet(KEY_SELECTED_BANKS, updated).apply()
+        safeEdit { putStringSet(KEY_SELECTED_BANKS, updated) }
         _settingsFlow.value = readSettings()
     }
 
     fun recordTokenError(errorMsg: String?) {
-        prefs.edit().putString(KEY_LAST_TOKEN_ERROR, errorMsg).apply()
+        safeEdit { putString(KEY_LAST_TOKEN_ERROR, errorMsg) }
         _settingsFlow.value = readSettings()
     }
 

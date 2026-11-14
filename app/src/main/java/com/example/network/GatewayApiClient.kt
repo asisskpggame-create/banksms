@@ -397,7 +397,7 @@ object GatewayApiClient {
         } catch (e: IOException) {
             ApproveResult.RetryableError(
                 httpCode = null,
-                message = "خطای شبکه در ارسال تأییدیه (${e.javaClass.simpleName}) — در صف تلاش مجدد."
+                message = describeNetworkException(e)
             )
         } catch (e: Exception) {
             ApproveResult.RetryableError(
@@ -501,7 +501,7 @@ object GatewayApiClient {
         } catch (e: IOException) {
             GatewayResult.RetryableFailure(
                 httpCode = null,
-                message = "عدم دسترسی به شبکه یا سرور (${e.javaClass.simpleName})."
+                message = describeNetworkException(e)
             )
         } catch (e: Exception) {
             GatewayResult.RetryableFailure(

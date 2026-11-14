@@ -455,22 +455,32 @@ private fun SmsRecordCard(
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(badgeColor.copy(alpha = 0.14f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AccountBalance,
-                        contentDescription = null,
-                        tint = badgeColor,
-                        modifier = Modifier.size(18.dp)
+                val bankSpec = remember(entry.bank, entry.bankTitle) {
+                    BankVisualCatalog.findByCodeOrTitle(entry.bank, entry.bankTitle)
+                }
+                if (bankSpec != null) {
+                    BankLogoBadge(
+                        spec = bankSpec,
+                        size = 42.dp
                     )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(badgeColor.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AccountBalance,
+                            contentDescription = null,
+                            tint = badgeColor,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(

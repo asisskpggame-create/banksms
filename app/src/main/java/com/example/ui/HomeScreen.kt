@@ -750,57 +750,81 @@ private fun StatCard(
 ) {
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.25f)),
-        tonalElevation = 1.dp
+        border = BorderStroke(
+            width = 1.dp,
+            brush = Brush.verticalGradient(
+                colors = listOf(
+                    accentColor.copy(alpha = 0.42f),
+                    accentColor.copy(alpha = 0.14f)
+                )
+            )
+        ),
+        tonalElevation = 2.dp
     ) {
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            accentColor.copy(alpha = 0.14f),
+                            Color.Transparent
+                        ),
+                        center = Offset(40f, 30f),
+                        radius = 220f
+                    )
+                )
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(13.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(28.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(accentColor.copy(alpha = 0.14f)),
-                    contentAlignment = Alignment.Center
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = accentColor,
-                        modifier = Modifier.size(16.dp)
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(accentColor.copy(alpha = 0.18f))
+                            .border(1.dp, accentColor.copy(alpha = 0.30f), RoundedCornerShape(9.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            tint = accentColor,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                    Text(
+                        text = value,
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = accentColor,
+                        fontWeight = FontWeight.Bold
                     )
                 }
                 Text(
-                    text = value,
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = accentColor,
-                    fontWeight = FontWeight.Bold
+                    text = title,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
         }
     }
 }
@@ -823,9 +847,10 @@ private fun LastMatchedSummaryCard(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f))
+                        .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.30f), RoundedCornerShape(11.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
@@ -858,7 +883,7 @@ private fun LastMatchedSummaryCard(
 
         if (lastMatchedLog == null) {
             Surface(
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
@@ -884,16 +909,19 @@ private fun LastMatchedSummaryCard(
             }
         } else {
             val timeStr = rememberFormattedTime(lastMatchedLog.decidedMs ?: lastMatchedLog.receivedMs)
+            val matchedBankSpec = remember(lastMatchedLog.bank, lastMatchedLog.bankTitle) {
+                BankVisualCatalog.findByCodeOrTitle(lastMatchedLog.bank, lastMatchedLog.bankTitle)
+            }
             Surface(
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -911,18 +939,28 @@ private fun LastMatchedSummaryCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    if (lastMatchedLog.amountMinor != null) {
-                        Text(
-                            text = "${SmsParser.formatToman(lastMatchedLog.amountMinor)} تومان",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = "${lastMatchedLog.bankTitle} • ${SmsParser.formatRial(lastMatchedLog.amountMinor)} ریال",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        if (matchedBankSpec != null) {
+                            BankLogoBadge(spec = matchedBankSpec, size = 44.dp)
+                        }
+                        Column {
+                            if (lastMatchedLog.amountMinor != null) {
+                                Text(
+                                    text = "${SmsParser.formatToman(lastMatchedLog.amountMinor)} تومان",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "${lastMatchedLog.bankTitle} • ${SmsParser.formatRial(lastMatchedLog.amountMinor)} ریال",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                     Text(
                         text = lastMatchedLog.body,
@@ -1014,6 +1052,9 @@ private fun FailedDeliveryErrorLogCard(
                 val timeStr = rememberFormattedTime(rec.receivedMs)
                 val reasonText = rec.lastError?.takeIf { it.isNotBlank() }
                     ?: "خطا در برقراری ارتباط با سرور (عدم اتصال یا پاسخ نامعتبر)"
+                val bankSpec = remember(rec.bank, rec.bankTitle) {
+                    BankVisualCatalog.findByCodeOrTitle(rec.bank, rec.bankTitle)
+                }
                 Surface(
                     shape = RoundedCornerShape(14.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -1033,19 +1074,27 @@ private fun FailedDeliveryErrorLogCard(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = buildString {
-                                    append(rec.bankTitle.ifBlank { rec.bank })
-                                    if (rec.amountMinor != null) {
-                                        append(" • ")
-                                        append(SmsParser.formatToman(rec.amountMinor))
-                                        append(" تومان")
-                                    }
-                                },
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (bankSpec != null) {
+                                    BankLogoBadge(spec = bankSpec, size = 30.dp)
+                                }
+                                Text(
+                                    text = buildString {
+                                        append(rec.bankTitle.ifBlank { rec.bank })
+                                        if (rec.amountMinor != null) {
+                                            append(" • ")
+                                            append(SmsParser.formatToman(rec.amountMinor))
+                                            append(" تومان")
+                                        }
+                                    },
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                             Text(
                                 text = "تلاش #${rec.attempts} • $timeStr",
                                 style = MaterialTheme.typography.labelSmall,

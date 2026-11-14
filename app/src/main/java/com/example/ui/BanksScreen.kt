@@ -378,11 +378,26 @@ private fun AddNewBankScreen(
 ) {
     var selectedBankCode by rememberSaveable { mutableStateOf<String?>(null) }
     var senderNumber by rememberSaveable { mutableStateOf("") }
+    var bankFilterQuery by rememberSaveable { mutableStateOf("") }
     var showReceivedSendersModal by rememberSaveable { mutableStateOf(false) }
     var validationError by rememberSaveable { mutableStateOf<String?>(null) }
 
     val selectedSpec = remember(selectedBankCode) {
         BankVisualCatalog.findByCode(selectedBankCode)
+    }
+
+    val filteredBanks = remember(bankFilterQuery) {
+        val q = bankFilterQuery.trim()
+        if (q.isEmpty()) {
+            BankVisualCatalog.MIRZA_BANKS
+        } else {
+            BankVisualCatalog.MIRZA_BANKS.filter {
+                it.gridLabelFa.contains(q, ignoreCase = true) ||
+                    it.cardTitleFa.contains(q, ignoreCase = true) ||
+                    it.code.contains(q, ignoreCase = true) ||
+                    it.defaultSender.contains(q, ignoreCase = true)
+            }
+        }
     }
 
     Column(
@@ -426,17 +441,57 @@ private fun AddNewBankScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = "انتخاب بانک",
-                style = MaterialTheme.typography.titleMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                ),
-                color = MirzaMutedText
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "انتخاب بانک",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    ),
+                    color = MirzaMutedText
+                )
+
+                // Compact inline search filter for the 33-bank grid
+                Box(
+                    modifier = Modifier
+                        .width(185.dp)
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MirzaInputBg)
+                        .border(1.dp, MirzaBorder, RoundedCornerShape(10.dp))
+                        .padding(horizontal = 10.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    if (bankFilterQuery.isEmpty()) {
+                        Text(
+                            text = "جستجوی سریع بانک...",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MirzaMutedText.copy(alpha = 0.7f)
+                        )
+                    }
+                    BasicTextField(
+                        value = bankFilterQuery,
+                        onValueChange = { bankFilterQuery = it },
+                        singleLine = true,
+                        cursorBrush = SolidColor(MirzaGreen),
+                        textStyle = TextStyle(
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("add_bank_search_input")
+                    )
+                }
+            }
 
             Surface(
-                shape = RoundedCornerShape(20.dp),
+                shape = RoundedCornerShape(22.dp),
                 color = MirzaCardBg,
                 border = BorderStroke(1.dp, MirzaBorder),
                 modifier = Modifier
@@ -453,7 +508,7 @@ private fun AddNewBankScreen(
                         .testTag("mirza_bank_grid")
                 ) {
                     items(
-                        items = BankVisualCatalog.MIRZA_BANKS,
+                        items = filteredBanks,
                         key = { it.code }
                     ) { bankSpec ->
                         val isSelected = selectedBankCode == bankSpec.code
@@ -462,11 +517,14 @@ private fun AddNewBankScreen(
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                             modifier = Modifier
                                 .clip(RoundedCornerShape(14.dp))
+                                .background(
+                                    if (isSelected) MirzaGreen.copy(alpha = 0.12f) else Color.Transparent
+                                )
                                 .clickable {
                                     selectedBankCode = bankSpec.code
                                     validationError = null
                                 }
-                                .padding(vertical = 4.dp)
+                                .padding(vertical = 6.dp, horizontal = 2.dp)
                                 .testTag("select_bank_item_${bankSpec.code}")
                         ) {
                             BankLogoBadge(
@@ -517,7 +575,11 @@ private fun AddNewBankScreen(
                         .height(54.dp)
                         .clip(RoundedCornerShape(14.dp))
                         .background(MirzaInputBg)
-                        .border(1.dp, MirzaBorder, RoundedCornerShape(14.dp))
+                        .border(
+                            width = 1.dp,
+                            color = if (senderNumber.isNotEmpty()) MirzaGreen.copy(alpha = 0.55f) else MirzaBorder,
+                            shape = RoundedCornerShape(14.dp)
+                        )
                         .padding(horizontal = 16.dp),
                     contentAlignment = Alignment.CenterStart
                 ) {
@@ -664,7 +726,6 @@ private fun AddNewBankScreen(
             onSelectSender = { chosen ->
                 senderNumber = chosen
                 validationError = null
-                // If user hasn't picked a bank yet, auto-detect bank if known
                 if (selectedBankCode == null) {
                     val detected = SmsParser.detectBank(chosen, "")
                     if (BankVisualCatalog.findByCode(detected.code) != null) {
@@ -694,8 +755,9 @@ private fun ReceivedSendersDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
-            shape = RoundedCornerShape(6.dp),
-            color = Color(0xFF424242),
+            shape = RoundedCornerShape(12.dp),
+            color = Color(0xFF3E4249),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
             modifier = Modifier
                 .fillMaxWidth(0.90f)
                 .heightIn(max = 640.dp)
@@ -712,6 +774,11 @@ private fun ReceivedSendersDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 22.dp, vertical = 18.dp)
+                )
+
+                HorizontalDivider(
+                    thickness = 1.dp,
+                    color = Color.White.copy(alpha = 0.08f)
                 )
 
                 LazyColumn(
@@ -736,9 +803,9 @@ private fun ReceivedSendersDialog(
                                 Text(
                                     text = "(قبلاً ثبت شده)",
                                     style = MaterialTheme.typography.bodyLarge.copy(
-                                        fontSize = 16.sp
+                                        fontSize = 15.sp
                                     ),
-                                    color = Color.White.copy(alpha = 0.85f)
+                                    color = Color(0xFFFBBF24)
                                 )
                                 Spacer(modifier = Modifier.width(10.dp))
                             }
@@ -747,9 +814,10 @@ private fun ReceivedSendersDialog(
                                 style = MaterialTheme.typography.bodyLarge.copy(
                                     fontFamily = FontFamily.SansSerif,
                                     fontSize = 17.sp,
+                                    fontWeight = if (isAlreadyRegistered) FontWeight.Normal else FontWeight.Medium,
                                     textDirection = TextDirection.Ltr
                                 ),
-                                color = Color.White
+                                color = if (isAlreadyRegistered) Color.White.copy(alpha = 0.55f) else Color.White
                             )
                         }
                     }
@@ -775,7 +843,7 @@ private fun ReceivedSendersDialog(
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold
                             ),
-                            color = Color(0xFF3B82F6)
+                            color = Color(0xFF60A5FA)
                         )
                     }
                 }

@@ -397,6 +397,18 @@ object BankVisualCatalog {
         if (code.isNullOrBlank()) return null
         return MIRZA_BANKS.firstOrNull { it.code.equals(code, ignoreCase = true) }
     }
+
+    fun findByCodeOrTitle(codeOrSender: String?, bankTitle: String?): BankVisualSpec? {
+        findByCode(codeOrSender)?.let { return it }
+        val detected = com.example.data.SmsParser.detectBank(codeOrSender, bankTitle)
+        findByCode(detected.code)?.let { return it }
+        if (!bankTitle.isNullOrBlank()) {
+            MIRZA_BANKS.firstOrNull {
+                bankTitle.contains(it.gridLabelFa) || it.cardTitleFa.contains(bankTitle)
+            }?.let { return it }
+        }
+        return null
+    }
 }
 
 /**
@@ -416,7 +428,7 @@ fun BankLogoBadge(
             .then(
                 if (isSelected) {
                     Modifier
-                        .border(3.dp, Color(0xFF38D373), CircleShape)
+                        .border(2.5.dp, Color(0xFF38D373), CircleShape)
                         .padding(3.dp)
                 } else {
                     Modifier
@@ -469,7 +481,6 @@ fun BankLogoBadge(
 
                         when (spec.code) {
                             "mellat" -> {
-                                // 3 red diamonds around a golden center circle
                                 for (angle in listOf(0f, 120f, 240f)) {
                                     rotate(angle, pivot = Offset(cx, cy)) {
                                         drawRoundRect(
@@ -487,7 +498,6 @@ fun BankLogoBadge(
                                 )
                             }
                             "saderat", "edbi" -> {
-                                // Iconic two-pillar arch with center dot
                                 val colW = r * 0.45f
                                 drawRoundRect(
                                     color = spec.logoPrimary,
@@ -508,7 +518,6 @@ fun BankLogoBadge(
                                 )
                             }
                             "maskan" -> {
-                                // Orange square frame with roof chevron inside
                                 drawRect(
                                     color = spec.logoPrimary,
                                     topLeft = Offset(cx - r * 0.68f, cy - r * 0.68f),
@@ -523,7 +532,6 @@ fun BankLogoBadge(
                                 drawPath(roof, color = spec.logoPrimary, style = Stroke(width = r * 0.20f))
                             }
                             "saman", "mehr" -> {
-                                // 5-petal flower with contrasting center circle
                                 for (i in 0 until 5) {
                                     rotate(i * 72f, pivot = Offset(cx, cy)) {
                                         drawCircle(
@@ -541,7 +549,6 @@ fun BankLogoBadge(
                                 )
                             }
                             "enbank" -> {
-                                // Purple diagonal stripes + dots
                                 drawLine(
                                     color = spec.logoPrimary,
                                     start = Offset(cx - r * 0.45f, cy + r * 0.7f),
@@ -568,7 +575,6 @@ fun BankLogoBadge(
                                 )
                             }
                             "day" -> {
-                                // Teal infinity loop
                                 drawCircle(
                                     color = spec.logoPrimary,
                                     radius = r * 0.38f,
@@ -583,7 +589,6 @@ fun BankLogoBadge(
                                 )
                             }
                             "pasargad", "wepod" -> {
-                                // Golden Pasargad tower silhouette
                                 val path = Path().apply {
                                     moveTo(cx - r * 0.45f, cy - r * 0.75f)
                                     lineTo(cx + r * 0.15f, cy - r * 0.75f)
@@ -596,7 +601,6 @@ fun BankLogoBadge(
                                 drawPath(path, color = spec.logoPrimary)
                             }
                             "gardeshgari" -> {
-                                // Hexagonal red geometric rosette
                                 for (i in 0 until 6) {
                                     rotate(i * 60f, pivot = Offset(cx, cy)) {
                                         drawLine(
@@ -615,7 +619,6 @@ fun BankLogoBadge(
                                 )
                             }
                             "khavarmianeh" -> {
-                                // Sunburst rays
                                 for (i in 0 until 12) {
                                     rotate(i * 30f, pivot = Offset(cx, cy)) {
                                         drawLine(
@@ -629,7 +632,6 @@ fun BankLogoBadge(
                                 }
                             }
                             "ayandeh" -> {
-                                // Brown rounded square with golden wave
                                 drawRoundRect(
                                     color = spec.logoPrimary,
                                     topLeft = Offset(cx - r * 0.72f, cy - r * 0.72f),
@@ -645,7 +647,6 @@ fun BankLogoBadge(
                                 )
                             }
                             else -> {
-                                // Wreath / Geometric emblem for Melli, Tejarat, Sepah, Keshavarzi, Sina, Karafarin, etc.
                                 drawCircle(
                                     color = spec.logoPrimary,
                                     radius = r * 0.72f,
@@ -680,7 +681,7 @@ fun RealisticBankCard(
     modifier: Modifier = Modifier
 ) {
     val startColor = spec?.cardGradientStart ?: Color(0xFF4B5558)
-    val endColor = spec?.cardGradientEnd ?: Color(0xFF394246)
+    val endColor = spec?.cardGradientEnd ?: Color(0xFF343D42)
     val displayTitle = bankTitleOverride?.takeIf { it.isNotBlank() }
         ?: spec?.cardTitleFa
         ?: "بانک را انتخاب کنید"
@@ -689,32 +690,46 @@ fun RealisticBankCard(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(194.dp)
-            .clip(RoundedCornerShape(22.dp))
+            .height(198.dp)
+            .clip(RoundedCornerShape(24.dp))
             .background(
                 Brush.linearGradient(
                     colors = listOf(startColor, endColor),
                     start = Offset(0f, 0f),
-                    end = Offset(900f, 500f)
+                    end = Offset(950f, 520f)
                 )
             )
             .border(
                 width = 1.dp,
-                color = Color.White.copy(alpha = 0.14f),
-                shape = RoundedCornerShape(22.dp)
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.28f),
+                        Color.White.copy(alpha = 0.08f)
+                    )
+                ),
+                shape = RoundedCornerShape(24.dp)
             )
     ) {
-        // Decorative translucent curved wave arcs matching Screenshot 2
+        // Decorative translucent curved wave arcs & subtle diagonal sheen matching Pro Max card finish
         Canvas(modifier = Modifier.fillMaxSize()) {
             drawCircle(
-                color = Color.White.copy(alpha = 0.08f),
-                radius = size.height * 0.85f,
-                center = Offset(size.width * 0.88f, size.height * 0.10f)
+                color = Color.White.copy(alpha = 0.085f),
+                radius = size.height * 0.88f,
+                center = Offset(size.width * 0.88f, size.height * 0.08f)
             )
             drawCircle(
                 color = Color.White.copy(alpha = 0.07f),
-                radius = size.height * 0.72f,
+                radius = size.height * 0.74f,
                 center = Offset(size.width * 0.10f, size.height * 0.98f)
+            )
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color.White.copy(alpha = 0.10f), Color.Transparent),
+                    center = Offset(size.width * 0.22f, size.height * 0.20f),
+                    radius = size.width * 0.55f
+                ),
+                radius = size.width * 0.55f,
+                center = Offset(size.width * 0.22f, size.height * 0.20f)
             )
         }
 
@@ -732,16 +747,23 @@ fun RealisticBankCard(
                 size = 50.dp
             )
             Spacer(modifier = Modifier.width(12.dp))
-            Text(
-                text = displayTitle,
-                style = MaterialTheme.typography.titleLarge.copy(
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 20.sp
-                ),
-                color = Color.White,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = displayTitle,
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 20.sp
+                    ),
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = if (spec != null) "متصل به شنودگر هوشمند پیامک" else "پیش‌نمایش زنده کارت بانکی",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.72f)
+                )
+            }
         }
 
         // Center-Left: Golden EMV Chip (in RTL, Alignment.CenterEnd is physical left)
@@ -784,7 +806,8 @@ fun RealisticBankCard(
             if (onDeleteClick != null) {
                 Surface(
                     shape = CircleShape,
-                    color = Color.Black.copy(alpha = 0.24f),
+                    color = Color.Black.copy(alpha = 0.28f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
                     modifier = Modifier
                         .size(44.dp)
                         .clip(CircleShape)
@@ -825,7 +848,6 @@ private fun GoldenEmvChip(modifier: Modifier = Modifier) {
         )
         val lineColor = Color(0xFF785109).copy(alpha = 0.55f)
         val stroke = 1.2.dp.toPx()
-        // Horizontal chip lines
         drawLine(
             color = lineColor,
             start = Offset(0f, size.height * 0.35f),
@@ -838,7 +860,6 @@ private fun GoldenEmvChip(modifier: Modifier = Modifier) {
             end = Offset(size.width, size.height * 0.65f),
             strokeWidth = stroke
         )
-        // Vertical chip lines
         drawLine(
             color = lineColor,
             start = Offset(size.width * 0.34f, 0f),

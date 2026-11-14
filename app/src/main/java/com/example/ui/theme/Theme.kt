@@ -1,6 +1,5 @@
 package com.example.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -9,15 +8,15 @@ import androidx.compose.ui.graphics.Color
 
 private val DarkColorScheme = darkColorScheme(
     primary = AsisEmerald,
-    onPrimary = Color(0xFF03281E),
+    onPrimary = Color(0xFF042213),
     primaryContainer = AsisEmeraldContainer,
     onPrimaryContainer = AsisEmeraldLight,
     secondary = AsisCyan,
-    onSecondary = Color(0xFF002B36),
-    secondaryContainer = Color(0xFF13485C),
-    onSecondaryContainer = Color(0xFFA5F3FC),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFF172E54),
+    onSecondaryContainer = Color(0xFFBFDBFE),
     tertiary = AsisAmber,
-    onTertiary = Color(0xFF3B2000),
+    onTertiary = Color(0xFF2E1600),
     tertiaryContainer = AsisAmberContainer,
     onTertiaryContainer = Color(0xFFFDE68A),
     error = AsisRose,
@@ -25,16 +24,17 @@ private val DarkColorScheme = darkColorScheme(
     errorContainer = AsisRoseContainer,
     onErrorContainer = Color(0xFFFECDD3),
     background = AsisNavyDark,
-    onBackground = Color(0xFFF1F5F9),
+    onBackground = Color(0xFFF8FAFC),
     surface = AsisSurfaceDark,
-    onSurface = Color(0xFFF1F5F9),
+    onSurface = Color(0xFFF8FAFC),
     surfaceVariant = AsisCardDark,
-    onSurfaceVariant = Color(0xFF9FB0C7),
+    onSurfaceVariant = Color(0xFF94A3B8),
+    surfaceContainerLowest = Color(0xFF0C0F17),
     surfaceContainerLow = AsisSurfaceDark,
     surfaceContainer = AsisCardDark,
     surfaceContainerHigh = AsisCardElevatedDark,
     outline = AsisBorderDark,
-    outlineVariant = AsisBorderDark.copy(alpha = 0.65f)
+    outlineVariant = AsisBorderDark.copy(alpha = 0.78f)
 )
 
 private val LightColorScheme = lightColorScheme(
@@ -42,10 +42,10 @@ private val LightColorScheme = lightColorScheme(
     onPrimary = Color.White,
     primaryContainer = Color(0xFFD1FAE5),
     onPrimaryContainer = Color(0xFF064E3B),
-    secondary = Color(0xFF0284C7),
+    secondary = Color(0xFF2563EB),
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFE0F2FE),
-    onSecondaryContainer = Color(0xFF0C4A6E),
+    secondaryContainer = Color(0xFFDBEAFE),
+    onSecondaryContainer = Color(0xFF1E3A8A),
     tertiary = Color(0xFFD97706),
     onTertiary = Color.White,
     tertiaryContainer = Color(0xFFFEF3C7),
@@ -69,7 +69,7 @@ private val LightColorScheme = lightColorScheme(
 
 @Composable
 fun MyApplicationTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme

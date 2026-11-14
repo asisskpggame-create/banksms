@@ -9,6 +9,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -40,23 +42,45 @@ fun AsisElevatedCard(
     modifier: Modifier = Modifier,
     containerColor: Color = MaterialTheme.colorScheme.surfaceContainer,
     borderColor: Color = MaterialTheme.colorScheme.outlineVariant,
-    cornerRadiusDp: Int = 20,
+    cornerRadiusDp: Int = 22,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val shape = RoundedCornerShape(cornerRadiusDp.dp)
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(cornerRadiusDp.dp),
+        shape = shape,
         color = containerColor,
-        border = BorderStroke(1.dp, borderColor),
-        tonalElevation = 1.dp
+        border = BorderStroke(
+            width = 1.dp,
+            brush = Brush.verticalGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = 0.10f),
+                    borderColor.copy(alpha = 0.75f)
+                )
+            )
+        ),
+        tonalElevation = 2.dp
     ) {
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            content = content
-        )
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.025f),
+                            Color.Transparent
+                        )
+                    )
+                )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                content = content
+            )
+        }
     }
 }
 
@@ -76,13 +100,25 @@ fun SectionHeader(
         Row(
             modifier = Modifier.weight(1f),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(tint.copy(alpha = 0.14f)),
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(
+                                tint.copy(alpha = 0.22f),
+                                tint.copy(alpha = 0.08f)
+                            )
+                        )
+                    )
+                    .border(
+                        width = 1.dp,
+                        color = tint.copy(alpha = 0.30f),
+                        shape = RoundedCornerShape(12.dp)
+                    ),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -92,7 +128,7 @@ fun SectionHeader(
                     modifier = Modifier.size(20.dp)
                 )
             }
-            Column {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleMedium,
@@ -133,7 +169,7 @@ fun LivePulseDot(
         val transition = rememberInfiniteTransition(label = "pulse")
         val anim by transition.animateFloat(
             initialValue = 0.85f,
-            targetValue = 1.45f,
+            targetValue = 1.5f,
             animationSpec = infiniteRepeatable(
                 animation = tween(1100, easing = FastOutSlowInEasing),
                 repeatMode = RepeatMode.Reverse
@@ -155,7 +191,7 @@ fun LivePulseDot(
                     .size(12.dp)
                     .scale(scale)
                     .clip(CircleShape)
-                    .background(dotColor.copy(alpha = 0.28f))
+                    .background(dotColor.copy(alpha = 0.32f))
             )
         }
         Box(
@@ -179,12 +215,12 @@ fun StatusPill(
         modifier = modifier,
         shape = RoundedCornerShape(50),
         color = color.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, color.copy(alpha = 0.28f))
+        border = BorderStroke(1.dp, color.copy(alpha = 0.32f))
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             if (isPulsing) {
                 LivePulseDot(isActive = true, activeColor = color, inactiveColor = color)
