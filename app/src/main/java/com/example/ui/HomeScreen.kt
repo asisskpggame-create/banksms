@@ -617,6 +617,7 @@ private fun PermissionsRequiredCard(
     hasNotificationPermission: Boolean,
     onRequestPermissions: () -> Unit
 ) {
+    val context = LocalContext.current
     AsisElevatedCard(
         modifier = Modifier.testTag("permissions_card"),
         containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f),
@@ -631,7 +632,7 @@ private fun PermissionsRequiredCard(
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             if (!hasSmsPermissions) {
                 Text(
-                    text = "• مجوز دریافت و خواندن پیامک (RECEIVE_SMS / READ_SMS) برای تشخیص واریزهای بانکی الزامی است.",
+                    text = "• مجوز دریافت و خواندن پیامک (RECEIVE_SMS / READ_SMS) برای شنود آنی BroadcastReceiver و تشخیص واریزهای بانکی الزامی است.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -644,19 +645,43 @@ private fun PermissionsRequiredCard(
                 )
             }
         }
-        Button(
-            onClick = onRequestPermissions,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-                .testTag("grant_permissions_button"),
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.tertiary,
-                contentColor = MaterialTheme.colorScheme.onTertiary
-            )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text("اعطای دسترسی‌های برنامه", fontWeight = FontWeight.Bold)
+            Button(
+                onClick = onRequestPermissions,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+                    .testTag("grant_permissions_button"),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.tertiary,
+                    contentColor = MaterialTheme.colorScheme.onTertiary
+                )
+            ) {
+                Text("اعطای دسترسی‌ها", fontWeight = FontWeight.Bold)
+            }
+            OutlinedButton(
+                onClick = {
+                    runCatching {
+                        val intent = Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.fromParts("package", context.packageName, null)
+                        ).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(intent)
+                    }
+                },
+                modifier = Modifier
+                    .height(48.dp)
+                    .testTag("open_app_permission_settings_button"),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("تنظیمات اپ")
+            }
         }
     }
 }

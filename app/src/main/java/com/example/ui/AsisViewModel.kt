@@ -301,8 +301,21 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun onSmsPermissionsGranted() {
+        viewModelScope.launch {
+            val windowHours = settingsRepo.readSettings().lastServerWindowHours
+            val synced = com.example.SmsReceiver.syncRecentInboxSms(appContext, windowHours)
+            if (synced > 0) {
+                _snackbarMessage.value = "$synced پیامک واریز اخیر از صندوق ورودی خوانده و در صف تطبیق قرار گرفت."
+            }
+            ForwardWorker.runSweepNow(appContext)
+        }
+    }
+
     fun flushQueueNow() {
         viewModelScope.launch {
+            val windowHours = settingsRepo.readSettings().lastServerWindowHours
+            com.example.SmsReceiver.syncRecentInboxSms(appContext, windowHours)
             _snackbarMessage.value = "در حال بررسی سفارش‌های منتظر از سرور و تطبیق پیامک‌ها..."
             ForwardWorker.runSweepNow(appContext)
         }

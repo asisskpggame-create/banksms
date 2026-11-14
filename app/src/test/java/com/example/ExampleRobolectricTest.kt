@@ -58,4 +58,47 @@ class ExampleRobolectricTest {
         val writable = db.openHelper.writableDatabase
         assertTrue(writable.isOpen)
     }
+
+    @Test
+    fun `verify SMS permissions, SmsReceiver registration, and forwarding ingestion`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val pm = app.packageManager
+
+        val smsIntent = android.content.Intent(android.provider.Telephony.Sms.Intents.SMS_RECEIVED_ACTION)
+        smsIntent.setPackage(app.packageName)
+        val receivers = pm.queryBroadcastReceivers(smsIntent, 0)
+        assertTrue(
+            "SmsReceiver must be registered for SMS_RECEIVED_ACTION",
+            receivers.any { it.activityInfo.name == SmsReceiver::class.java.name }
+        )
+
+        kotlinx.coroutines.runBlocking {
+            val db = AppDatabase.getInstance(app)
+            db.logDao().clearAllLogs()
+
+            // Personal mobile number must be ignored and never stored
+            val personalResult = SmsReceiver.ingestIncomingSms(
+                appContext = app,
+                sender = "09123456789",
+                rawBody = "واریز 5,000,000 ریال به حساب شما"
+            )
+            org.junit.Assert.assertFalse(personalResult)
+
+            // Valid bank deposit SMS must be stored as NEW and trigger ForwardWorker
+            val bankBody = "بانک ملت\nواریز به حساب 0123456789\nمبلغ: 50,000,000ریال\nمانده: 90,000,000ریال"
+            val bankResult = SmsReceiver.ingestIncomingSms(
+                appContext = app,
+                sender = "98200033",
+                rawBody = bankBody
+            )
+            assertTrue(bankResult)
+
+            val fp = com.example.data.SmsParser.fingerprint("98200033", bankBody)
+            val saved = db.logDao().getByFingerprint(fp)
+            assertNotNull(saved)
+            assertEquals("NEW", saved?.status)
+            assertEquals(50_000_000L, saved?.amountMinor)
+            assertEquals("بانک ملت", saved?.bankTitle)
+        }
+    }
 }

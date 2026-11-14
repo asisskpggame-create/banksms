@@ -161,24 +161,17 @@ fun AsisAppScreen(
     var hasNotificationPermission by remember {
         mutableStateOf(checkNotificationPermissionGranted(context))
     }
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, context) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                hasSmsPermissions = checkSmsPermissionsGranted(context)
-                hasNotificationPermission = checkNotificationPermissionGranted(context)
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
+    var didAutoPromptPermissions by rememberSaveable { mutableStateOf(false) }
 
     val permissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) {
-        hasSmsPermissions = checkSmsPermissionsGranted(context)
+        val smsGrantedNow = checkSmsPermissionsGranted(context)
+        hasSmsPermissions = smsGrantedNow
         hasNotificationPermission = checkNotificationPermissionGranted(context)
+        if (smsGrantedNow) {
+            asisViewModel.onSmsPermissionsGranted()
+        }
     }
 
     val requestAllNeededPermissions = {
@@ -189,7 +182,54 @@ fun AsisAppScreen(
                 add(Manifest.permission.POST_NOTIFICATIONS)
             }
         }.toTypedArray()
-        permissionsLauncher.launch(perms)
+        runCatching { permissionsLauncher.launch(perms) }
+        Unit
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val wasGranted = hasSmsPermissions
+                val nowGranted = checkSmsPermissionsGranted(context)
+                hasSmsPermissions = nowGranted
+                hasNotificationPermission = checkNotificationPermissionGranted(context)
+                if (!wasGranted && nowGranted) {
+                    asisViewModel.onSmsPermissionsGranted()
+                } else if (!nowGranted && !didAutoPromptPermissions) {
+                    didAutoPromptPermissions = true
+                    requestAllNeededPermissions()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Dynamic BroadcastReceiver registration alongside static AndroidManifest registration
+    // to ensure immediate foreground SMS_RECEIVED delivery across all OEM ROMs.
+    DisposableEffect(context, hasSmsPermissions) {
+        val dynamicSmsReceiver = if (hasSmsPermissions) SmsReceiver() else null
+        if (dynamicSmsReceiver != null) {
+            runCatching {
+                val filter = android.content.IntentFilter(
+                    android.provider.Telephony.Sms.Intents.SMS_RECEIVED_ACTION
+                ).apply {
+                    priority = 999
+                }
+                ContextCompat.registerReceiver(
+                    context,
+                    dynamicSmsReceiver,
+                    filter,
+                    ContextCompat.RECEIVER_EXPORTED
+                )
+            }
+        }
+        onDispose {
+            if (dynamicSmsReceiver != null) {
+                runCatching { context.unregisterReceiver(dynamicSmsReceiver) }
+            }
+        }
     }
 
     BackHandler(enabled = currentTab != AsisTab.HOME) {
