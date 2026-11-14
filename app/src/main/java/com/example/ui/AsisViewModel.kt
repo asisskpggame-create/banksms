@@ -342,11 +342,6 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                     modelClass: Class<T>,
                     extras: androidx.lifecycle.viewmodel.CreationExtras
                 ): T = create(modelClass)
-
-                override fun <T : androidx.lifecycle.ViewModel> create(
-                    modelClass: kotlin.reflect.KClass<T>,
-                    extras: androidx.lifecycle.viewmodel.CreationExtras
-                ): T = create(modelClass.java)
             }
     }
 }
