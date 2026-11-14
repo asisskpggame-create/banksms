@@ -144,6 +144,18 @@ class ExampleUnitTest {
     fun detectBank_recognizesSenderAndBodyKeywords() {
         assertEquals("mellat", SmsParser.detectBank("98200033", "واریز").code)
         assertEquals("blu", SmsParser.detectBank("unknown", "حساب بلو شما 500,000 ریال شارژ شد").code)
+        assertEquals("blu", SmsParser.detectBank("98200084210", "واریز به حساب").code)
+        assertEquals("saman", SmsParser.detectBank("9820000", "بانک سامان واریز").code)
+        assertEquals("refah", SmsParser.detectBank("98200000", "بانک رفاه واریز").code)
+        assertEquals("resalat", SmsParser.detectBank("982000069", "واریز به حساب").code)
+        assertEquals("melal", SmsParser.detectBank("982000755", "واریز").code)
+        assertEquals("sarmayeh", SmsParser.detectBank("98200075", "واریز").code)
+        assertEquals("day", SmsParser.detectBank("98200092", "واریز").code)
+        assertEquals("iranzamin", SmsParser.detectBank("98200068", "واریز").code)
+        assertEquals("tosee_taavon", SmsParser.detectBank("98200099", "واریز").code)
+        assertEquals("wepod", SmsParser.detectBank("982000888", "ویپاد: واریز 1,000,000 ریال").code)
+        assertEquals("bankino", SmsParser.detectBank("98200058", "بانکینو: واریز 2,000,000 ریال").code)
+        assertTrue("Expected at least 45 Iranian banks", SmsParser.KNOWN_BANKS.size >= 45)
         assertEquals("test", SmsParser.parseFull("تست اتصال", "98200033").reason)
     }
 

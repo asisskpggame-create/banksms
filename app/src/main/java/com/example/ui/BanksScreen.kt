@@ -20,11 +20,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Science
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -34,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -67,6 +71,16 @@ private val PARSER_PRESETS = listOf(
         body = "بلو\nواریز 50,000,000ریال به حساب شما\nموجودی: 80,000,000ریال"
     ),
     ParserLabPreset(
+        label = "ویپاد پاسارگاد",
+        sender = "982000888",
+        body = "ویپاد\nواریز به حساب شما\nمبلغ: 12,500,000 ریال\nموجودی: 45,000,000 ریال"
+    ),
+    ParserLabPreset(
+        label = "قرض‌الحسنه رسالت",
+        sender = "982000069",
+        body = "بانک قرض الحسنه رسالت\nواریز به حساب 10.123456.1\nمبلغ 3,200,000 ریال\nمانده 14,000,000 ریال"
+    ),
+    ParserLabPreset(
         label = "شماره شخصی (رد)",
         sender = "09123456789",
         body = "واریز به حساب 2,000,000 ریال"
@@ -87,8 +101,23 @@ fun BanksScreen(
     onSelectAllBanks: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var bankSearchQuery by rememberSaveable { mutableStateOf("") }
     var senderInput by rememberSaveable { mutableStateOf(PARSER_PRESETS.first().sender) }
     var parserTestInput by rememberSaveable { mutableStateOf(PARSER_PRESETS.first().body) }
+
+    val filteredBanks = remember(bankSearchQuery) {
+        val q = bankSearchQuery.trim()
+        if (q.isEmpty()) {
+            SmsParser.KNOWN_BANKS
+        } else {
+            SmsParser.KNOWN_BANKS.filter { bank ->
+                bank.titleFa.contains(q, ignoreCase = true) ||
+                    bank.code.contains(q, ignoreCase = true) ||
+                    bank.senderKeywords.any { it.contains(q, ignoreCase = true) } ||
+                    bank.bodyKeywords.any { it.contains(q, ignoreCase = true) }
+            }
+        }
+    }
 
     val isPersonalSender = SmsParser.isPersonalSender(senderInput)
     val parsedPreview = SmsParser.parseFull(parserTestInput, senderInput)
@@ -100,22 +129,24 @@ fun BanksScreen(
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Optional Bank Filter Card
+        // Iranian Banks Directory & Optional Bank Filter Card
         AsisElevatedCard {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SectionHeader(
-                    icon = Icons.Default.AccountBalance,
-                    title = "فیلتر بانک‌های مجاز",
-                    subtitle = if (settings.filterBanksEnabled) {
-                        "${settings.selectedBankCodes.size} از ${SmsParser.KNOWN_BANKS.size} بانک انتخاب شده"
-                    } else {
-                        "غیرفعال (پیش‌فرض): تمام سرشماره‌های غیرشخصی پردازش می‌شوند"
-                    }
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    SectionHeader(
+                        icon = Icons.Default.AccountBalance,
+                        title = "بانک‌ها و نئوبانک‌های ایران (${SmsParser.KNOWN_BANKS.size} بانک)",
+                        subtitle = if (settings.filterBanksEnabled) {
+                            "فیلتر محدودکننده فعال: ${settings.selectedBankCodes.size} از ${SmsParser.KNOWN_BANKS.size} بانک مجاز"
+                        } else {
+                            "پشتیبانی خودکار از تمام بانک‌های دولتی، خصوصی، قرض‌الحسنه، موسسات و نئوبانک‌ها"
+                        }
+                    )
+                }
                 Switch(
                     checked = settings.filterBanksEnabled,
                     onCheckedChange = onToggleFilterEnabled,
@@ -123,61 +154,105 @@ fun BanksScreen(
                 )
             }
 
-            AnimatedVisibility(visible = settings.filterBanksEnabled) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { onSelectAllBanks(true) },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
-                                .testTag("select_all_banks_button"),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("انتخاب همه")
-                        }
-                        OutlinedButton(
-                            onClick = { onSelectAllBanks(false) },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
-                                .testTag("deselect_all_banks_button"),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("حذف همه")
-                        }
-                    }
-
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        for (bank in SmsParser.KNOWN_BANKS) {
-                            val selected = settings.selectedBankCodes.contains(bank.code)
-                            FilterChip(
-                                selected = selected,
-                                onClick = { onToggleBank(bank.code) },
-                                leadingIcon = if (selected) {
-                                    {
-                                        Icon(
-                                            imageVector = Icons.Default.Check,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                } else {
-                                    null
-                                },
-                                label = { Text(bank.titleFa) },
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.testTag("bank_chip_${bank.code}")
+            OutlinedTextField(
+                value = bankSearchQuery,
+                onValueChange = { bankSearchQuery = it },
+                label = { Text("جستجوی نام بانک، کد یا سرشماره (مثلاً ملت، دی، ویپاد، 200033)") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = null
+                    )
+                },
+                trailingIcon = if (bankSearchQuery.isNotEmpty()) {
+                    {
+                        IconButton(onClick = { bankSearchQuery = "" }) {
+                            Icon(
+                                imageVector = Icons.Default.Clear,
+                                contentDescription = "پاک کردن جستجو"
                             )
                         }
                     }
+                } else {
+                    null
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("bank_search_input")
+            )
+
+            AnimatedVisibility(visible = settings.filterBanksEnabled) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { onSelectAllBanks(true) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("select_all_banks_button"),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("انتخاب همه (${SmsParser.KNOWN_BANKS.size})")
+                    }
+                    OutlinedButton(
+                        onClick = { onSelectAllBanks(false) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("deselect_all_banks_button"),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("حذف همه")
+                    }
+                }
+            }
+
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                for (bank in filteredBanks) {
+                    val selected = !settings.filterBanksEnabled || settings.selectedBankCodes.contains(bank.code)
+                    val primaryShortcode = bank.senderKeywords.firstOrNull { it.all(Char::isDigit) }
+                    FilterChip(
+                        selected = selected,
+                        onClick = {
+                            if (!settings.filterBanksEnabled) {
+                                // در حالت پیش‌فرض، لمس یک بانک سرشمارهٔ آن را در آزمایشگاه پارسر قرار می‌دهد
+                                senderInput = primaryShortcode ?: bank.code
+                                parserTestInput = "${bank.titleFa}\nواریز به حساب شما\nمبلغ: 2,500,000 ریال\nمانده: 15,000,000 ریال"
+                            } else {
+                                onToggleBank(bank.code)
+                            }
+                        },
+                        leadingIcon = if (selected) {
+                            {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        } else {
+                            null
+                        },
+                        label = {
+                            Text(
+                                text = if (primaryShortcode != null) {
+                                    "${bank.titleFa} ($primaryShortcode)"
+                                } else {
+                                    bank.titleFa
+                                }
+                            )
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.testTag("bank_chip_${bank.code}")
+                    )
                 }
             }
         }
