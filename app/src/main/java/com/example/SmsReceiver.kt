@@ -5,10 +5,12 @@ import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
 import com.example.data.AppDatabase
+import com.example.data.SensitiveSmsReason
 import com.example.data.SettingsRepo
 import com.example.data.SmsParser
 import com.example.data.SmsRecord
 import com.example.data.SmsStatus
+import com.example.util.NotificationHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -61,7 +63,8 @@ class SmsReceiver : BroadcastReceiver() {
                     sender = bank,
                     rawBody = rawBody,
                     receivedAtMs = receivedAtMs,
-                    storedAtMs = storedAtMs
+                    storedAtMs = storedAtMs,
+                    sendPushAlerts = true
                 )
             } finally {
                 pendingResult.finish()
@@ -72,15 +75,16 @@ class SmsReceiver : BroadcastReceiver() {
     companion object {
         /**
          * Processes a real incoming bank SMS, stores it in Room (if not from a personal mobile
-         * sender and not a duplicate), and enqueues `ForwardWorker.enqueueMatcherSweep` via
-         * WorkManager when a valid deposit (`status = NEW`) is recorded.
+         * sender and not a duplicate), dispatches real-time sensitive SMS push notifications if
+         * configured, and enqueues `ForwardWorker.enqueueMatcherSweep` when a deposit is recorded.
          */
         suspend fun ingestIncomingSms(
             appContext: Context,
             sender: String,
             rawBody: String,
             receivedAtMs: Long = System.currentTimeMillis(),
-            storedAtMs: Long = System.currentTimeMillis()
+            storedAtMs: Long = System.currentTimeMillis(),
+            sendPushAlerts: Boolean = true
         ): Boolean {
             if (rawBody.isBlank()) return false
             val bank = sender.trim().take(32)
@@ -177,6 +181,52 @@ class SmsReceiver : BroadcastReceiver() {
             )
 
             val rowId = dao.insertIgnoreDuplicate(record)
+            if (rowId != -1L && sendPushAlerts) {
+                val sensitiveAlert = SmsParser.classifySensitiveBankSms(
+                    rawText = rawBody,
+                    parsed = parsed,
+                    status = initialStatus,
+                    minTomanThreshold = settings.sensitiveSmsMinToman,
+                    includeReviewAlerts = settings.notifyOnAmbiguousOrManual
+                )
+                if (sensitiveAlert != null) {
+                    when (sensitiveAlert.reason) {
+                        SensitiveSmsReason.HIGH_VALUE_DEPOSIT,
+                        SensitiveSmsReason.DEBIT_OR_WITHDRAWAL,
+                        SensitiveSmsReason.SECURITY_OR_OTP -> {
+                            if (settings.notifyOnSensitiveBankSms) {
+                                NotificationHelper.notifySensitiveBankSms(
+                                    context = appContext,
+                                    smsId = rowId,
+                                    bankTitle = detectedBank.titleFa,
+                                    categoryTitleFa = sensitiveAlert.categoryTitleFa,
+                                    amountMinor = sensitiveAlert.amountMinor,
+                                    smsBody = rawBody
+                                )
+                            }
+                        }
+
+                        SensitiveSmsReason.AMBIGUOUS_OR_NEEDS_REVIEW -> {
+                            val isDirectReviewState = initialStatus == SmsStatus.UNKNOWN_DEPOSIT ||
+                                initialStatus == SmsStatus.MANUAL ||
+                                initialStatus == SmsStatus.AMBIGUOUS ||
+                                parsed.reason in listOf("mixed_direction", "several_amounts")
+                            if (isDirectReviewState && settings.notifyOnAmbiguousOrManual) {
+                                NotificationHelper.notifySensitiveBankSms(
+                                    context = appContext,
+                                    smsId = rowId,
+                                    bankTitle = detectedBank.titleFa,
+                                    categoryTitleFa = sensitiveAlert.categoryTitleFa,
+                                    amountMinor = sensitiveAlert.amountMinor,
+                                    smsBody = rawBody,
+                                    bypassPrefs = true
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             if (rowId != -1L && parsed.amountMinor != null) {
                 // WorkManager, not a network call inside goAsync(): the system ends a receiver after ~10 s
                 ForwardWorker.enqueueMatcherSweep(appContext)
@@ -225,7 +275,7 @@ class SmsReceiver : BroadcastReceiver() {
                         val address = if (addrIdx >= 0) cursor.getString(addrIdx).orEmpty() else ""
                         val body = if (bodyIdx >= 0) cursor.getString(bodyIdx).orEmpty() else ""
                         val dateMs = if (dateIdx >= 0) cursor.getLong(dateIdx) else System.currentTimeMillis()
-                        if (ingestIncomingSms(appContext, address, body, receivedAtMs = dateMs)) {
+                        if (ingestIncomingSms(appContext, address, body, receivedAtMs = dateMs, sendPushAlerts = false)) {
                             newlyEnqueued++
                         }
                     }

@@ -129,7 +129,10 @@ class ForwardWorker(
             )
 
             val pendingSuccess = when (pendingResult) {
-                is PendingFetchResult.Success -> pendingResult
+                is PendingFetchResult.Success -> {
+                    NotificationHelper.cancelServerErrorNotification(appContext)
+                    pendingResult
+                }
 
                 is PendingFetchResult.NotFound404FallbackToSmsIn -> {
                     // Server is running classic `/sms-in` without `/sms-pending` -> forward directly to `POST /sms-in`
@@ -153,6 +156,12 @@ class ForwardWorker(
                 }
 
                 is PendingFetchResult.PermanentError -> {
+                    NotificationHelper.notifyServerConnectionError(
+                        context = appContext,
+                        errorTitle = "خطای ارتباط با سرور درگاه",
+                        errorDetail = pendingResult.message,
+                        httpCode = pendingResult.httpCode
+                    )
                     for (rec in activeDeposits) {
                         dao.update(
                             rec.copy(
@@ -166,6 +175,12 @@ class ForwardWorker(
                 }
 
                 is PendingFetchResult.RetryableError -> {
+                    NotificationHelper.notifyServerConnectionError(
+                        context = appContext,
+                        errorTitle = "خطای ارتباط با سرور درگاه",
+                        errorDetail = pendingResult.message,
+                        httpCode = pendingResult.httpCode
+                    )
                     for (rec in activeDeposits) {
                         dao.update(
                             rec.copy(
@@ -458,6 +473,7 @@ class ForwardWorker(
                             )
                         )
                         settingsRepo.recordTokenError(null)
+                        NotificationHelper.cancelServerErrorNotification(appContext)
                     }
 
                     is GatewayResult.PermanentFailure -> {
@@ -474,6 +490,13 @@ class ForwardWorker(
                             settingsRepo.recordTokenError(res.message)
                             NotificationHelper.notifyTokenError(appContext, res.message)
                             return WorkOutcome.FAILURE
+                        } else {
+                            NotificationHelper.notifyServerConnectionError(
+                                context = appContext,
+                                errorTitle = "خطا در ارسال پیامک به سرور",
+                                errorDetail = res.message,
+                                httpCode = res.httpCode
+                            )
                         }
                     }
 
@@ -485,6 +508,12 @@ class ForwardWorker(
                                 attempts = entry.attempts + 1,
                                 lastError = res.message
                             )
+                        )
+                        NotificationHelper.notifyServerConnectionError(
+                            context = appContext,
+                            errorTitle = "خطا در ارسال پیامک به سرور",
+                            errorDetail = res.message,
+                            httpCode = res.httpCode
                         )
                         shouldRetry = true
                         if (res.httpCode == 429) break
@@ -543,6 +572,7 @@ class ForwardWorker(
                     )
                     dao.markInvoiceMatched(itemPublicId, rec.id)
                     settingsRepo.recordTokenError(null)
+                    NotificationHelper.cancelServerErrorNotification(appContext)
                     ApprovalStepOutcome.DONE
                 }
 
@@ -605,6 +635,12 @@ class ForwardWorker(
                             httpCode = result.httpCode,
                             lastError = result.message
                         )
+                    )
+                    NotificationHelper.notifyServerConnectionError(
+                        context = appContext,
+                        errorTitle = "خطای تأیید سفارش در سرور",
+                        errorDetail = result.message,
+                        httpCode = result.httpCode
                     )
                     ApprovalStepOutcome.RETRY
                 }

@@ -1,16 +1,7 @@
 package com.example.ui
 
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -38,10 +29,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -49,9 +38,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.example.data.SmsParser
+import com.example.ui.components.AsisMotion
+import com.example.ui.components.AsisSpringModal
 
 private data class SampleSmsPreset(
     val label: String,
@@ -99,205 +88,167 @@ fun SimulateBankSmsDialog(
     val isPersonalSender = SmsParser.isPersonalSender(sender)
     val previewParsed = SmsParser.parseFull(body, sender)
 
-    var modalVisible by remember { mutableStateOf(false) }
-    var closingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
-
-    LaunchedEffect(Unit) {
-        modalVisible = true
-    }
-
-    LaunchedEffect(closingAction) {
-        val action = closingAction ?: return@LaunchedEffect
-        modalVisible = false
-        kotlinx.coroutines.delay(150)
-        action()
-    }
-
-    Dialog(
-        onDismissRequest = { closingAction = onDismiss },
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        AnimatedVisibility(
-            visible = modalVisible,
-            enter = fadeIn(tween(220)) +
-                scaleIn(
-                    initialScale = 0.92f,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioLowBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    )
-                ) +
-                slideInVertically(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    )
-                ) { it / 12 },
-            exit = fadeOut(tween(150)) +
-                scaleOut(targetScale = 0.92f, animationSpec = tween(150)) +
-                slideOutVertically(animationSpec = tween(150)) { it / 12 }
+    AsisSpringModal(onDismissRequest = onDismiss) { triggerClose ->
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                tonalElevation = 6.dp,
+            Text(
+                text = "شبیه‌ساز تست محلی پیامک بانکی",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+
+            Text(
+                text = "این پیامک صرفاً به‌صورت محلی توسط SmsParser پارس و در تاریخچه ذخیره می‌شود و هرگز به سرور ارسال نمی‌گردد (جهت جلوگیری از تأیید اشتباه سفارش واقعی).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                SIMULATOR_PRESETS.forEach { preset ->
+                    AssistChip(
+                        onClick = {
+                            sender = preset.sender
+                            body = preset.body
+                        },
+                        label = {
+                            Text(
+                                text = preset.label,
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = sender,
+                onValueChange = { sender = it },
+                label = { Text("فرستنده (bank / originatingAddress)") },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                isError = isPersonalSender,
+                supportingText = if (isPersonalSender) {
+                    {
+                        Text(
+                            text = "فرستندهٔ شماره موبایل شخصی توسط SmsReceiver نادیده گرفته می‌شود.",
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                } else {
+                    null
+                },
                 modifier = Modifier
-                    .fillMaxWidth(0.92f)
-                    .animateContentSize()
+                    .fillMaxWidth()
+                    .testTag("simulate_sender_input")
+            )
+
+            OutlinedTextField(
+                value = body,
+                onValueChange = { body = it },
+                label = { Text("متن خام پیامک بانکی") },
+                minLines = 3,
+                maxLines = 6,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("simulate_body_input")
+            )
+
+            val validDeposit = !isPersonalSender && previewParsed.amountMinor != null
+            val boxColor by animateColorAsState(
+                targetValue = if (validDeposit) {
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                } else {
+                    MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+                },
+                animationSpec = AsisMotion.smoothSpring(),
+                label = "simPreviewBoxColor"
+            )
+            val accentColor by animateColorAsState(
+                targetValue = if (validDeposit) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+                animationSpec = AsisMotion.smoothSpring(),
+                label = "simPreviewAccentColor"
+            )
+
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = boxColor,
+                border = BorderStroke(1.dp, accentColor.copy(alpha = 0.35f)),
+                modifier = Modifier.animateContentSize(animationSpec = AsisMotion.smoothSpring())
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(20.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (validDeposit) Icons.Default.CheckCircle else Icons.Default.RemoveCircleOutline,
+                            contentDescription = null,
+                            tint = accentColor,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "نتیجهٔ آنی SmsParser (${previewParsed.bankTitleFa}):",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = accentColor
+                        )
+                    }
                     Text(
-                        text = "شبیه‌ساز تست محلی پیامک بانکی",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
+                        text = when {
+                            isPersonalSender -> "رد به دلیل فرستندهٔ موبایل شخصی (isPersonalSender = true)"
+                            previewParsed.amountMinor != null ->
+                                "واریز معتبر: ${SmsParser.formatToman(previewParsed.amountMinor)} تومان (${SmsParser.formatRial(previewParsed.amountMinor)} ریال)\nثبت تستی: status=IGNORED • reason=test_deposit_not_sent"
+                            else ->
+                                "ردشده: reason=${previewParsed.reason} (${SmsParser.reasonLabelFa(previewParsed.reason)})"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface
                     )
+                }
+            }
 
-                    Text(
-                        text = "این پیامک صرفاً به‌صورت محلی توسط SmsParser پارس و در تاریخچه ذخیره می‌شود و هرگز به سرور ارسال نمی‌گردد (جهت جلوگیری از تأیید اشتباه سفارش واقعی).",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = { triggerClose(onDismiss) }) {
+                    Text("انصراف")
+                }
+                Button(
+                    onClick = { triggerClose { onSendSimulated(sender, body) } },
+                    modifier = Modifier.testTag("confirm_simulate_sms_button"),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "ثبت تست محلی",
+                        modifier = Modifier.size(16.dp)
                     )
-
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        SIMULATOR_PRESETS.forEach { preset ->
-                            AssistChip(
-                                onClick = {
-                                    sender = preset.sender
-                                    body = preset.body
-                                },
-                                label = {
-                                    Text(
-                                        text = preset.label,
-                                        style = MaterialTheme.typography.labelMedium
-                                    )
-                                }
-                            )
-                        }
-                    }
-
-                    OutlinedTextField(
-                        value = sender,
-                        onValueChange = { sender = it },
-                        label = { Text("فرستنده (bank / originatingAddress)") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
-                        isError = isPersonalSender,
-                        supportingText = if (isPersonalSender) {
-                            {
-                                Text(
-                                    text = "فرستندهٔ شماره موبایل شخصی توسط SmsReceiver نادیده گرفته می‌شود.",
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            }
-                        } else {
-                            null
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("simulate_sender_input")
-                    )
-
-                    OutlinedTextField(
-                        value = body,
-                        onValueChange = { body = it },
-                        label = { Text("متن خام پیامک بانکی") },
-                        minLines = 3,
-                        maxLines = 6,
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("simulate_body_input")
-                    )
-
-                    val validDeposit = !isPersonalSender && previewParsed.amountMinor != null
-                    val boxColor = if (validDeposit) {
-                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-                    } else {
-                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
-                    }
-                    val accentColor = if (validDeposit) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.error
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = boxColor,
-                        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.35f))
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Icon(
-                                    imageVector = if (validDeposit) Icons.Default.CheckCircle else Icons.Default.RemoveCircleOutline,
-                                    contentDescription = null,
-                                    tint = accentColor,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = "نتیجهٔ آنی SmsParser (${previewParsed.bankTitleFa}):",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = accentColor
-                                )
-                            }
-                            Text(
-                                text = when {
-                                    isPersonalSender -> "رد به دلیل فرستندهٔ موبایل شخصی (isPersonalSender = true)"
-                                    previewParsed.amountMinor != null ->
-                                        "واریز معتبر: ${SmsParser.formatToman(previewParsed.amountMinor)} تومان (${SmsParser.formatRial(previewParsed.amountMinor)} ریال)\nثبت تستی: status=IGNORED • reason=test_deposit_not_sent"
-                                    else ->
-                                        "ردشده: reason=${previewParsed.reason} (${SmsParser.reasonLabelFa(previewParsed.reason)})"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        TextButton(onClick = { closingAction = onDismiss }) {
-                            Text("انصراف")
-                        }
-                        Button(
-                            onClick = { closingAction = { onSendSimulated(sender, body) } },
-                            modifier = Modifier.testTag("confirm_simulate_sms_button"),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.Send,
-                                contentDescription = "ثبت تست محلی",
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("ثبت تست محلی")
-                        }
-                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("ثبت تست محلی")
                 }
             }
         }
     }
 }
+

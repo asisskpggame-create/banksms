@@ -9,4 +9,8 @@
     <string name="test_connection_payload">تست اتصال</string>
     <string name="notif_channel_name">هشدارهای درگاه پیامک ASiS</string>
     <string name="notif_channel_desc">اطلاع‌رسانی خطای توکن (۴۰۱) و وضعیت ارسال پیامک‌ها</string>
+    <string name="notif_channel_server_errors_name">خطاهای اتصال به سرور</string>
+    <string name="notif_channel_server_errors_desc">اعلان فوری هنگام قطع ارتباط یا خطای سرور</string>
+    <string name="notif_channel_sensitive_sms_name">پیامک‌های بانکی حساس</string>
+    <string name="notif_channel_sensitive_sms_desc">اعلان لحظه‌ای واریزهای کلان، برداشت‌ها و پیامک‌های امنیتی</string>
 </resources>

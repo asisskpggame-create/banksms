@@ -3,9 +3,9 @@ package com.example.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -75,6 +75,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
@@ -91,6 +92,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.data.GatewaySettings
 import com.example.data.RegisteredBankCard
 import com.example.data.SmsParser
+import com.example.ui.components.AsisMotion
 
 private val MirzaDarkBg = Color(0xFF141821)
 private val MirzaCardBg = Color(0xFF1E2430)
@@ -126,17 +128,14 @@ fun BanksScreen(
         AnimatedContent(
             targetState = isAddingNewBank,
             transitionSpec = {
-                (fadeIn(animationSpec = tween(230)) +
+                (fadeIn(animationSpec = tween(220)) +
                     slideInVertically(
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessMediumLow
-                        )
-                    ) { fullHeight -> if (targetState) fullHeight / 16 else -fullHeight / 16 } +
-                    scaleIn(initialScale = 0.97f, animationSpec = tween(230)))
+                        animationSpec = AsisMotion.offsetSpring()
+                    ) { fullHeight -> if (targetState) fullHeight / 12 else -fullHeight / 12 } +
+                    scaleIn(initialScale = 0.96f, animationSpec = AsisMotion.bouncySpring()))
                     .togetherWith(
-                        fadeOut(animationSpec = tween(170)) +
-                            scaleOut(targetScale = 0.97f, animationSpec = tween(170))
+                        fadeOut(animationSpec = tween(160)) +
+                            scaleOut(targetScale = 0.96f, animationSpec = tween(160))
                     )
             },
             label = "banksSubScreenTransition"
@@ -205,7 +204,7 @@ private fun RegisteredBanksMainScreen(
                 )
                 AnimatedVisibility(
                     visible = settings.registeredBankCards.isNotEmpty(),
-                    enter = fadeIn(tween(220)) + scaleIn(initialScale = 0.85f),
+                    enter = fadeIn(tween(220)) + scaleIn(initialScale = 0.85f, animationSpec = AsisMotion.bouncySpring()),
                     exit = fadeOut(tween(160)) + scaleOut(targetScale = 0.85f)
                 ) {
                     Surface(
@@ -259,12 +258,12 @@ private fun RegisteredBanksMainScreen(
 
         AnimatedVisibility(
             visible = settings.registeredBankCards.isEmpty(),
-            enter = fadeIn(tween(260)) +
-                expandVertically(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)) +
-                scaleIn(initialScale = 0.95f),
+            enter = fadeIn(tween(240)) +
+                expandVertically(animationSpec = AsisMotion.smoothSpring()) +
+                scaleIn(initialScale = 0.94f, animationSpec = AsisMotion.bouncySpring()),
             exit = fadeOut(tween(180)) +
-                shrinkVertically(animationSpec = tween(200)) +
-                scaleOut(targetScale = 0.95f)
+                shrinkVertically(animationSpec = AsisMotion.smoothSpring()) +
+                scaleOut(targetScale = 0.94f)
         ) {
             Surface(
                 shape = RoundedCornerShape(20.dp),
@@ -309,12 +308,7 @@ private fun RegisteredBanksMainScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .animateContentSize(
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessMediumLow
-                        )
-                    ),
+                    .animateContentSize(animationSpec = AsisMotion.smoothSpring()),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 for (card in settings.registeredBankCards) {
@@ -336,23 +330,13 @@ private fun RegisteredBanksMainScreen(
 
                         AnimatedVisibility(
                             visible = isCardEntered && !isCardRemoving,
-                            enter = fadeIn(tween(250)) +
-                                expandVertically(
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioLowBouncy,
-                                        stiffness = Spring.StiffnessMediumLow
-                                    )
-                                ) +
-                                slideInVertically(
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioLowBouncy,
-                                        stiffness = Spring.StiffnessMediumLow
-                                    )
-                                ) { it / 6 } +
-                                scaleIn(initialScale = 0.94f, animationSpec = tween(240)),
-                            exit = fadeOut(tween(180)) +
-                                shrinkVertically(animationSpec = tween(190)) +
-                                scaleOut(targetScale = 0.92f, animationSpec = tween(180))
+                            enter = fadeIn(tween(230)) +
+                                expandVertically(animationSpec = AsisMotion.bouncySpring()) +
+                                slideInVertically(animationSpec = AsisMotion.offsetSpring()) { it / 6 } +
+                                scaleIn(initialScale = 0.93f, animationSpec = AsisMotion.bouncySpring()),
+                            exit = fadeOut(tween(170)) +
+                                shrinkVertically(animationSpec = AsisMotion.smoothSpring()) +
+                                scaleOut(targetScale = 0.92f, animationSpec = tween(170))
                         ) {
                             val spec = BankVisualCatalog.findByCode(card.bankCode)
                             RealisticBankCard(
@@ -422,7 +406,11 @@ private fun RegisteredBanksMainScreen(
                     )
                 }
 
-                AnimatedVisibility(visible = showParserLab) {
+                AnimatedVisibility(
+                    visible = showParserLab,
+                    enter = fadeIn(tween(220)) + expandVertically(animationSpec = AsisMotion.smoothSpring()),
+                    exit = fadeOut(tween(160)) + shrinkVertically(animationSpec = AsisMotion.smoothSpring())
+                ) {
                     val parsedPreview = SmsParser.parseFull(parserTestInput, senderInput)
                     val isPersonal = SmsParser.isPersonalSender(senderInput)
                     Column(
@@ -634,14 +622,28 @@ private fun AddNewBankScreen(
                         key = { it.code }
                     ) { bankSpec ->
                         val isSelected = selectedBankCode == bankSpec.code
+                        val itemScale by animateFloatAsState(
+                            targetValue = if (isSelected) 1.05f else 1.0f,
+                            animationSpec = AsisMotion.snappySpring(),
+                            label = "bankGridScale_${bankSpec.code}"
+                        )
+                        val itemBg by animateColorAsState(
+                            targetValue = if (isSelected) MirzaGreen.copy(alpha = 0.14f) else Color.Transparent,
+                            animationSpec = AsisMotion.smoothSpring(),
+                            label = "bankGridBg_${bankSpec.code}"
+                        )
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                             modifier = Modifier
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(
-                                    if (isSelected) MirzaGreen.copy(alpha = 0.12f) else Color.Transparent
+                                .animateItem(
+                                    fadeInSpec = tween(200),
+                                    placementSpec = AsisMotion.offsetSpring(),
+                                    fadeOutSpec = tween(150)
                                 )
+                                .scale(itemScale)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(itemBg)
                                 .clickable {
                                     selectedBankCode = bankSpec.code
                                     validationError = null
@@ -758,8 +760,12 @@ private fun AddNewBankScreen(
 
             AnimatedVisibility(
                 visible = selectedSpec != null && senderNumber.trim() != selectedSpec.defaultSender,
-                enter = fadeIn(tween(220)) + expandVertically(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)),
-                exit = fadeOut(tween(160)) + shrinkVertically(animationSpec = tween(160))
+                enter = fadeIn(tween(220)) +
+                    expandVertically(animationSpec = AsisMotion.smoothSpring()) +
+                    scaleIn(initialScale = 0.94f, animationSpec = AsisMotion.bouncySpring()),
+                exit = fadeOut(tween(150)) +
+                    shrinkVertically(animationSpec = AsisMotion.smoothSpring()) +
+                    scaleOut(targetScale = 0.94f)
             ) {
                 val specForChip = selectedSpec
                 if (specForChip != null) {
@@ -1032,23 +1038,17 @@ private fun ReceivedSendersDialog(
     ) {
         AnimatedVisibility(
             visible = modalVisible,
-            enter = fadeIn(tween(220)) +
+            enter = fadeIn(tween(210)) +
                 scaleIn(
-                    initialScale = 0.92f,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioLowBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    )
+                    initialScale = 0.90f,
+                    animationSpec = AsisMotion.bouncySpring()
                 ) +
                 slideInVertically(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    )
-                ) { it / 12 },
+                    animationSpec = AsisMotion.offsetSpring()
+                ) { it / 10 },
             exit = fadeOut(tween(160)) +
-                scaleOut(targetScale = 0.92f, animationSpec = tween(160)) +
-                slideOutVertically(animationSpec = tween(160)) { it / 12 }
+                scaleOut(targetScale = 0.90f, animationSpec = tween(160)) +
+                slideOutVertically(animationSpec = tween(160)) { it / 10 }
         ) {
             Surface(
                 shape = RoundedCornerShape(24.dp),
@@ -1058,12 +1058,7 @@ private fun ReceivedSendersDialog(
                 modifier = Modifier
                     .fillMaxWidth(0.93f)
                     .heightIn(max = 680.dp)
-                    .animateContentSize(
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessMediumLow
-                        )
-                    )
+                    .animateContentSize(animationSpec = AsisMotion.smoothSpring())
                     .testTag("received_senders_modal")
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -1242,108 +1237,122 @@ private fun ReceivedSendersDialog(
                 )
 
                 // 4. Senders List or Empty Search State
-                if (filteredSenders.isEmpty()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 24.dp, vertical = 32.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = null,
-                            tint = MirzaMutedText,
-                            modifier = Modifier.size(38.dp)
-                        )
-                        Text(
-                            text = "سرشماره‌ای مطابق با «$searchQuery» یافت نشد",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold
-                            ),
-                            color = Color.White,
-                            textAlign = TextAlign.Center
-                        )
-                        Text(
-                            text = "می‌توانید فیلتر را تغییر دهید یا عبارت جستجو شده را مستقیماً به عنوان سرشماره ثبت کنید.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MirzaMutedText,
-                            textAlign = TextAlign.Center
-                        )
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                AnimatedContent(
+                    targetState = filteredSenders.isEmpty(),
+                    transitionSpec = {
+                        (fadeIn(tween(200)) + scaleIn(initialScale = 0.97f, animationSpec = AsisMotion.bouncySpring()))
+                            .togetherWith(fadeOut(tween(140)) + scaleOut(targetScale = 0.97f))
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false),
+                    label = "receivedSendersEmptyOrList"
+                ) { isEmpty ->
+                    if (isEmpty) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp, vertical = 32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            if (searchQuery.trim().isNotEmpty()) {
-                                Button(
-                                    onClick = { triggerSelect(normalizeSearchText(searchQuery.trim())) },
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = MirzaGreen,
-                                        contentColor = Color.White
-                                    ),
-                                    modifier = Modifier.testTag("use_searched_sender_directly_button")
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = null,
+                                tint = MirzaMutedText,
+                                modifier = Modifier.size(38.dp)
+                            )
+                            Text(
+                                text = "سرشماره‌ای مطابق با «$searchQuery» یافت نشد",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                color = Color.White,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                text = "می‌توانید فیلتر را تغییر دهید یا عبارت جستجو شده را مستقیماً به عنوان سرشماره ثبت کنید.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MirzaMutedText,
+                                textAlign = TextAlign.Center
+                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (searchQuery.trim().isNotEmpty()) {
+                                    Button(
+                                        onClick = { triggerSelect(normalizeSearchText(searchQuery.trim())) },
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MirzaGreen,
+                                            contentColor = Color.White
+                                        ),
+                                        modifier = Modifier.testTag("use_searched_sender_directly_button")
+                                    ) {
+                                        Text(
+                                            text = "انتخاب «${searchQuery.trim()}»",
+                                            style = MaterialTheme.typography.labelLarge.copy(
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        )
+                                    }
+                                }
+                                TextButton(
+                                    onClick = {
+                                        searchQuery = ""
+                                        filterMode = SenderFilterMode.ALL
+                                    }
                                 ) {
                                     Text(
-                                        text = "انتخاب «${searchQuery.trim()}»",
-                                        style = MaterialTheme.typography.labelLarge.copy(
-                                            fontWeight = FontWeight.Bold
-                                        )
+                                        text = "نمایش همه سرشماره‌ها",
+                                        color = Color(0xFF60A5FA),
+                                        fontWeight = FontWeight.Bold
                                     )
                                 }
                             }
-                            TextButton(
-                                onClick = {
-                                    searchQuery = ""
-                                    filterMode = SenderFilterMode.ALL
-                                }
-                            ) {
-                                Text(
-                                    text = "نمایش همه سرشماره‌ها",
-                                    color = Color(0xFF60A5FA),
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
                         }
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f, fill = false),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(
-                            items = filteredSenders,
-                            key = { it.sender }
-                        ) { item ->
-                            val isAlreadyRegistered = item.isAlreadyRegistered
-                            val isRecognizedBank = item.bankSpec != null || item.detectedBankTitleFa != null
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth(),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(
+                                items = filteredSenders,
+                                key = { it.sender }
+                            ) { item ->
+                                val isAlreadyRegistered = item.isAlreadyRegistered
+                                val isRecognizedBank = item.bankSpec != null || item.detectedBankTitleFa != null
 
-                            Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = when {
-                                    isAlreadyRegistered -> Color(0xFF1A202C).copy(alpha = 0.65f)
-                                    isRecognizedBank -> Color(0xFF1E293B)
-                                    else -> Color(0xFF1A2130)
-                                },
-                                border = BorderStroke(
-                                    width = 1.dp,
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
                                     color = when {
-                                        isAlreadyRegistered -> Color(0xFFFBBF24).copy(alpha = 0.28f)
-                                        isRecognizedBank -> MirzaGreen.copy(alpha = 0.35f)
-                                        else -> Color(0xFF283246)
-                                    }
-                                ),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .clickable(enabled = !isAlreadyRegistered) {
-                                        triggerSelect(item.sender)
-                                    }
-                                    .testTag("received_sender_option_${item.sender}")
-                            ) {
+                                        isAlreadyRegistered -> Color(0xFF1A202C).copy(alpha = 0.65f)
+                                        isRecognizedBank -> Color(0xFF1E293B)
+                                        else -> Color(0xFF1A2130)
+                                    },
+                                    border = BorderStroke(
+                                        width = 1.dp,
+                                        color = when {
+                                            isAlreadyRegistered -> Color(0xFFFBBF24).copy(alpha = 0.28f)
+                                            isRecognizedBank -> MirzaGreen.copy(alpha = 0.35f)
+                                            else -> Color(0xFF283246)
+                                        }
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .animateItem(
+                                            fadeInSpec = tween(200),
+                                            placementSpec = AsisMotion.offsetSpring(),
+                                            fadeOutSpec = tween(150)
+                                        )
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .clickable(enabled = !isAlreadyRegistered) {
+                                            triggerSelect(item.sender)
+                                        }
+                                        .testTag("received_sender_option_${item.sender}")
+                                ) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -1461,6 +1470,7 @@ private fun ReceivedSendersDialog(
                             }
                         }
                     }
+                }
                 }
 
                 HorizontalDivider(

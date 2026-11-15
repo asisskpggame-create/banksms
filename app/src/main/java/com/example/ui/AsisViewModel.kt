@@ -15,11 +15,18 @@ import com.example.data.SmsStatus
 import com.example.network.GatewayApiClient
 import com.example.network.GatewayResult
 import com.example.network.PendingFetchResult
+import com.example.network.ServerConnectionLevel
+import com.example.network.ServerConnectionStatusUi
+import com.example.network.ServerConnectionTelemetry
+import com.example.network.ServerHealthTracker
+import com.example.util.NotificationHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -71,21 +78,115 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
 
+    val serverStatusState: StateFlow<ServerConnectionStatusUi> = combine(
+        isOnlineState,
+        settingsState,
+        ServerHealthTracker.telemetryFlow
+    ) { isOnline, settings, telemetry ->
+        computeServerConnectionStatus(
+            isOnline = isOnline,
+            settings = settings,
+            telemetry = telemetry
+        )
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        computeServerConnectionStatus(
+            isOnline = isOnlineState.value,
+            settings = settingsState.value,
+            telemetry = ServerHealthTracker.telemetryFlow.value
+        )
+    )
+
     init {
         runCatching { InternetWatchService.register(appContext) }
         viewModelScope.launch {
             runCatching { logDao.deletePromoLogs() }
         }
-        // Fast 15-second server invoice inquiry & log matcher loop (guarantees < 1 minute verification)
+        // Re-probe server immediately whenever network transitions back online
         viewModelScope.launch {
+            var previousOnline: Boolean? = null
+            isOnlineState.collect { onlineNow ->
+                if (onlineNow && previousOnline == false) {
+                    probeServerSilently()
+                }
+                previousOnline = onlineNow
+            }
+        }
+        // Immediate startup server check + 15-second live sync & connectivity probe loop
+        viewModelScope.launch {
+            probeServerSilently()
             while (isActive) {
                 delay(15_000L)
                 runCatching {
                     val current = settingsRepo.readSettings()
-                    if (current.serviceEnabled && current.isConfigured) {
-                        ForwardWorker.runSweepNow(appContext)
+                    if (current.isConfigured && isOnlineState.value) {
+                        if (current.serviceEnabled) {
+                            ForwardWorker.runSweepNow(appContext)
+                        }
+                        GatewayApiClient.pingServer(current.endpointUrl, current.gatewayToken)
                     }
                 }
+            }
+        }
+        // Monitor live server/network connection state and send real-time push alerts on disconnects or errors
+        viewModelScope.launch {
+            var previousLevel: ServerConnectionLevel? = null
+            var hadConnectionError = false
+            combine(
+                isOnlineState,
+                settingsState,
+                ServerHealthTracker.telemetryFlow
+            ) { online, settings, telemetry ->
+                Triple(online, settings, telemetry)
+            }.collect { (online, settings, telemetry) ->
+                val uiStatus = computeServerConnectionStatus(online, settings, telemetry)
+                if (uiStatus.level == ServerConnectionLevel.GREEN) {
+                    if (hadConnectionError || previousLevel == ServerConnectionLevel.RED) {
+                        NotificationHelper.cancelServerErrorNotification(appContext)
+                    }
+                    hadConnectionError = false
+                } else if (settings.isConfigured && settings.serviceEnabled) {
+                    val hasPingFailure = telemetry.lastPingOk == false && !telemetry.isChecking && telemetry.httpCode != 401
+                    val wentOffline = !online && previousLevel != null && previousLevel != ServerConnectionLevel.RED
+                    if (wentOffline || hasPingFailure) {
+                        hadConnectionError = true
+                        NotificationHelper.notifyServerConnectionError(
+                            context = appContext,
+                            errorTitle = uiStatus.titleFa,
+                            errorDetail = uiStatus.detailFa,
+                            httpCode = if (!online) null else telemetry.httpCode
+                        )
+                    }
+                }
+                previousLevel = uiStatus.level
+            }
+        }
+    }
+
+    private suspend fun probeServerSilently() {
+        runCatching {
+            val current = settingsRepo.readSettings()
+            if (current.isConfigured && isOnlineState.value) {
+                GatewayApiClient.pingServer(current.endpointUrl, current.gatewayToken)
+            }
+        }
+    }
+
+    fun checkServerConnectionNow() {
+        viewModelScope.launch {
+            val current = settingsRepo.readSettings()
+            if (!current.isConfigured) {
+                _snackbarMessage.value = "ابتدا آدرس سرور و توکن را در تنظیمات وارد کنید."
+                return@launch
+            }
+            if (!InternetWatchService.checkCurrentlyOnline(appContext) && !isOnlineState.value) {
+                _snackbarMessage.value = "اتصال اینترنت دستگاه برقرار نیست."
+                return@launch
+            }
+            val ok = GatewayApiClient.pingServer(current.endpointUrl, current.gatewayToken)
+            if (ok && current.serviceEnabled) {
+                ForwardWorker.runSweepNow(appContext)
             }
         }
     }
@@ -97,7 +198,10 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
     fun setServiceEnabled(enabled: Boolean) {
         settingsRepo.setServiceEnabled(enabled)
         if (enabled) {
-            viewModelScope.launch { ForwardWorker.runSweepNow(appContext) }
+            viewModelScope.launch {
+                probeServerSilently()
+                ForwardWorker.runSweepNow(appContext)
+            }
             _snackbarMessage.value = "سرویس تطبیق و تأیید پیامک فعال شد."
         } else {
             _snackbarMessage.value = "سرویس موقتاً متوقف شد."
@@ -114,6 +218,59 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setNotifyOnServerConnectionError(enabled: Boolean) {
+        settingsRepo.setNotifyOnServerConnectionError(enabled)
+        if (!enabled) {
+            NotificationHelper.cancelServerErrorNotification(appContext)
+        }
+        _snackbarMessage.value = if (enabled) {
+            "اعلان لحظه‌ای خطاهای اتصال به سرور فعال شد."
+        } else {
+            "اعلان خطاهای اتصال به سرور غیرفعال شد."
+        }
+    }
+
+    fun setNotifyOnSensitiveBankSms(enabled: Boolean) {
+        settingsRepo.setNotifyOnSensitiveBankSms(enabled)
+        _snackbarMessage.value = if (enabled) {
+            "اعلان لحظه‌ای پیامک‌های بانکی حساس فعال شد."
+        } else {
+            "اعلان پیامک‌های بانکی حساس غیرفعال شد."
+        }
+    }
+
+    fun setNotifyOnAmbiguousOrManual(enabled: Boolean) {
+        settingsRepo.setNotifyOnAmbiguousOrManual(enabled)
+        _snackbarMessage.value = if (enabled) {
+            "اعلان واریزهای مبهم و نیازمند تأیید دستی فعال شد."
+        } else {
+            "اعلان واریزهای مبهم و تأیید دستی غیرفعال شد."
+        }
+    }
+
+    fun setSensitiveSmsMinToman(minToman: Long) {
+        val clean = minToman.coerceAtLeast(0L)
+        settingsRepo.setSensitiveSmsMinToman(clean)
+        _snackbarMessage.value = if (clean == 0L) {
+            "آستانه اعلان حساس روی «همه واریزهای بانکی» تنظیم شد."
+        } else {
+            "آستانه واریز کلان روی ${SmsParser.formatRial(clean)} تومان تنظیم شد."
+        }
+    }
+
+    fun sendTestPushNotification() {
+        if (!NotificationHelper.hasNotificationPermission(appContext)) {
+            _snackbarMessage.value = "ابتدا مجوز ارسال اعلان (Notification) را فعال کنید."
+            return
+        }
+        val posted = NotificationHelper.sendTestPushAlert(appContext)
+        _snackbarMessage.value = if (posted) {
+            "اعلان آزمایشی لحظه‌ای ارسال شد."
+        } else {
+            "ارسال اعلان با خطا مواجه شد؛ مجوز اعلان‌های سیستم را بررسی کنید."
+        }
+    }
+
     fun saveSettings(endpointUrl: String, token: String, localMaxTomanStr: String) {
         val validationError = GatewayApiClient.validateInputConfig(endpointUrl, token)
         if (validationError != null) {
@@ -123,7 +280,10 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         val maxToman = localMaxTomanStr.trim().replace(",", "").toLongOrNull()?.coerceAtLeast(0L) ?: 0L
         settingsRepo.saveEndpointAndToken(endpointUrl, token, maxToman)
         _snackbarMessage.value = "تنظیمات با رمزنگاری AES-256 ذخیره شد."
-        viewModelScope.launch { ForwardWorker.runSweepNow(appContext) }
+        viewModelScope.launch {
+            probeServerSilently()
+            ForwardWorker.runSweepNow(appContext)
+        }
     }
 
     fun runTestConnection(endpointUrl: String, token: String) {
@@ -560,6 +720,142 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
+        fun computeServerConnectionStatus(
+            isOnline: Boolean,
+            settings: GatewaySettings,
+            telemetry: ServerConnectionTelemetry
+        ): ServerConnectionStatusUi {
+            val hostLabel = runCatching {
+                java.net.URI(GatewayApiClient.extractBasePanelUrl(settings.endpointUrl)).host
+            }.getOrNull()?.takeIf { it.isNotBlank() }
+
+            if (!isOnline) {
+                return ServerConnectionStatusUi(
+                    level = ServerConnectionLevel.RED,
+                    titleFa = "آفلاین • اینترنت قطع است",
+                    detailFa = "عدم دسترسی به اینترنت؛ پیامک‌ها تا اتصال مجدد در صف امن نگهداری می‌شوند.",
+                    latencyMs = null,
+                    hostLabel = hostLabel,
+                    lastCheckedAtMs = telemetry.lastCheckedAtMs,
+                    isChecking = false,
+                    needsConfiguration = !settings.isConfigured
+                )
+            }
+
+            if (!settings.isConfigured) {
+                return ServerConnectionStatusUi(
+                    level = ServerConnectionLevel.YELLOW,
+                    titleFa = "نیازمند تنظیم اتصال سرور",
+                    detailFa = "آدرس HTTPS پنل و توکن درگاه را در بخش تنظیمات ثبت کنید.",
+                    latencyMs = null,
+                    hostLabel = null,
+                    lastCheckedAtMs = telemetry.lastCheckedAtMs,
+                    isChecking = false,
+                    needsConfiguration = true
+                )
+            }
+
+            if (!settings.lastTokenError.isNullOrBlank() || telemetry.httpCode == 401) {
+                return ServerConnectionStatusUi(
+                    level = ServerConnectionLevel.RED,
+                    titleFa = "قطع ارتباط • خطای توکن (۴۰۱)",
+                    detailFa = settings.lastTokenError ?: telemetry.lastErrorMessage
+                        ?: "توکن درگاه با سرور مطابقت ندارد.",
+                    latencyMs = telemetry.latencyMs,
+                    hostLabel = hostLabel,
+                    lastCheckedAtMs = telemetry.lastCheckedAtMs,
+                    isChecking = telemetry.isChecking,
+                    needsConfiguration = true
+                )
+            }
+
+            if (telemetry.lastPingOk == false) {
+                val isRateLimit = telemetry.httpCode == 429
+                return ServerConnectionStatusUi(
+                    level = if (isRateLimit) ServerConnectionLevel.YELLOW else ServerConnectionLevel.RED,
+                    titleFa = if (isRateLimit) {
+                        "اتصال محدود • سقف درخواست (۴۲۹)"
+                    } else {
+                        "آفلاین • عدم پاسخ‌گویی سرور"
+                    },
+                    detailFa = telemetry.lastErrorMessage ?: "سرور در دسترس نیست یا پاسخ نمی‌دهد.",
+                    latencyMs = telemetry.latencyMs,
+                    hostLabel = hostLabel,
+                    lastCheckedAtMs = telemetry.lastCheckedAtMs,
+                    isChecking = telemetry.isChecking,
+                    needsConfiguration = false
+                )
+            }
+
+            if (telemetry.isChecking && telemetry.lastPingOk == null) {
+                return ServerConnectionStatusUi(
+                    level = ServerConnectionLevel.YELLOW,
+                    titleFa = "در حال بررسی اتصال به سرور...",
+                    detailFa = hostLabel?.let { "برقراری ارتباط با $it" } ?: "ارسال پینگ اولیه به درگاه",
+                    latencyMs = telemetry.latencyMs,
+                    hostLabel = hostLabel,
+                    lastCheckedAtMs = telemetry.lastCheckedAtMs,
+                    isChecking = true,
+                    needsConfiguration = false
+                )
+            }
+
+            if (!settings.serviceEnabled) {
+                return ServerConnectionStatusUi(
+                    level = ServerConnectionLevel.YELLOW,
+                    titleFa = "آنلاین • سرویس تطبیق متوقف است",
+                    detailFa = "ارتباط اینترنت برقرار است ولی سرویس پردازش پیامک موقتاً متوقف شده است.",
+                    latencyMs = telemetry.latencyMs,
+                    hostLabel = hostLabel,
+                    lastCheckedAtMs = telemetry.lastCheckedAtMs,
+                    isChecking = telemetry.isChecking,
+                    needsConfiguration = false
+                )
+            }
+
+            if (telemetry.lastPingOk == null) {
+                return ServerConnectionStatusUi(
+                    level = ServerConnectionLevel.YELLOW,
+                    titleFa = "در حال همگام‌سازی اولیه با سرور...",
+                    detailFa = hostLabel?.let { "بررسی وضعیت درگاه $it" } ?: "بررسی دسترسی سرور در حال انجام است",
+                    latencyMs = null,
+                    hostLabel = hostLabel,
+                    lastCheckedAtMs = telemetry.lastCheckedAtMs,
+                    isChecking = true,
+                    needsConfiguration = false
+                )
+            }
+
+            val latency = telemetry.latencyMs ?: 0L
+            if (latency > 2000L) {
+                return ServerConnectionStatusUi(
+                    level = ServerConnectionLevel.YELLOW,
+                    titleFa = "اتصال ناپایدار یا کند به سرور",
+                    detailFa = "زمان پاسخ سرور بالا است (${latency} ms) • وضعیت تحت نظر است.",
+                    latencyMs = latency,
+                    hostLabel = hostLabel,
+                    lastCheckedAtMs = telemetry.lastCheckedAtMs,
+                    isChecking = telemetry.isChecking,
+                    needsConfiguration = false
+                )
+            }
+
+            return ServerConnectionStatusUi(
+                level = ServerConnectionLevel.GREEN,
+                titleFa = "آنلاین • متصل به سرور",
+                detailFa = if (hostLabel != null) {
+                    "ارتباط پایدار با $hostLabel"
+                } else {
+                    "سرور آمادهٔ دریافت و تأیید آنی واریزی‌ها است"
+                },
+                latencyMs = latency,
+                hostLabel = hostLabel,
+                lastCheckedAtMs = telemetry.lastCheckedAtMs,
+                isChecking = telemetry.isChecking,
+                needsConfiguration = false
+            )
+        }
+
         fun provideFactory(application: Application): androidx.lifecycle.ViewModelProvider.Factory =
             object : androidx.lifecycle.ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")

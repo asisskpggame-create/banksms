@@ -1,10 +1,17 @@
 package com.example.ui
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -65,6 +72,8 @@ import com.example.data.GatewaySettings
 import com.example.data.SmsParser
 import com.example.network.GatewayApiClient
 import com.example.ui.components.AsisElevatedCard
+import com.example.ui.components.AsisMotion
+import com.example.ui.components.NotificationSettingsPanelCard
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusPill
 
@@ -77,6 +86,13 @@ fun SettingsScreen(
     onTestConnection: (endpointUrl: String, token: String) -> Unit,
     onTestPendingEndpoint: (endpointUrl: String, token: String) -> Unit,
     onResetTestState: () -> Unit,
+    hasNotificationPermission: Boolean = true,
+    onRequestNotificationPermission: () -> Unit = {},
+    onToggleNotifyServerError: (Boolean) -> Unit = {},
+    onToggleNotifySensitiveSms: (Boolean) -> Unit = {},
+    onToggleNotifyAmbiguousManual: (Boolean) -> Unit = {},
+    onUpdateSensitiveSmsMinToman: (Long) -> Unit = {},
+    onSendTestNotification: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var endpointInput by rememberSaveable { mutableStateOf(settings.endpointUrl) }
@@ -112,7 +128,9 @@ fun SettingsScreen(
     ) {
         // Top Security & Sync Overview Strip
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .animateContentSize(animationSpec = AsisMotion.smoothSpring()),
             shape = RoundedCornerShape(20.dp),
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
@@ -215,6 +233,18 @@ fun SettingsScreen(
             )
         }
 
+        // Real-Time Push Notification Settings Panel
+        NotificationSettingsPanelCard(
+            settings = settings,
+            hasNotificationPermission = hasNotificationPermission,
+            onRequestNotificationPermission = onRequestNotificationPermission,
+            onToggleNotifyServerError = onToggleNotifyServerError,
+            onToggleNotifySensitiveSms = onToggleNotifySensitiveSms,
+            onToggleNotifyAmbiguousManual = onToggleNotifyAmbiguousManual,
+            onUpdateSensitiveSmsMinToman = onUpdateSensitiveSmsMinToman,
+            onSendTestNotification = onSendTestNotification
+        )
+
         // Endpoint & Token Configuration Card
         AsisElevatedCard {
             SectionHeader(
@@ -272,7 +302,15 @@ fun SettingsScreen(
                     .testTag("endpoint_url_input")
             )
 
-            if (basePanelPreview.isNotEmpty() && isHttpsValid) {
+            AnimatedVisibility(
+                visible = basePanelPreview.isNotEmpty() && isHttpsValid,
+                enter = fadeIn(tween(220)) +
+                    expandVertically(animationSpec = AsisMotion.smoothSpring()) +
+                    scaleIn(initialScale = 0.96f, animationSpec = AsisMotion.bouncySpring()),
+                exit = fadeOut(tween(150)) +
+                    shrinkVertically(animationSpec = AsisMotion.smoothSpring()) +
+                    scaleOut(targetScale = 0.96f, animationSpec = tween(150))
+            ) {
                 Surface(
                     shape = RoundedCornerShape(14.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -415,8 +453,12 @@ fun SettingsScreen(
         // Test Result Banner
         AnimatedVisibility(
             visible = testConnectionState !is TestConnectionUiState.Idle,
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically()
+            enter = fadeIn(tween(220)) +
+                expandVertically(animationSpec = AsisMotion.smoothSpring()) +
+                scaleIn(initialScale = 0.95f, animationSpec = AsisMotion.bouncySpring()),
+            exit = fadeOut(tween(150)) +
+                shrinkVertically(animationSpec = AsisMotion.smoothSpring()) +
+                scaleOut(targetScale = 0.95f, animationSpec = tween(150))
         ) {
             TestConnectionResultBanner(testConnectionState = testConnectionState)
         }
@@ -455,7 +497,19 @@ fun SettingsScreen(
 
 @Composable
 private fun TestConnectionResultBanner(testConnectionState: TestConnectionUiState) {
-    when (testConnectionState) {
+    AnimatedContent(
+        targetState = testConnectionState,
+        transitionSpec = {
+            (fadeIn(tween(220)) +
+                slideInVertically(AsisMotion.offsetSpring()) { it / 8 } +
+                scaleIn(initialScale = 0.96f, animationSpec = AsisMotion.bouncySpring()))
+                .togetherWith(
+                    fadeOut(tween(140)) + scaleOut(targetScale = 0.96f, animationSpec = tween(140))
+                )
+        },
+        label = "testConnectionResultBanner"
+    ) { state ->
+    when (state) {
         is TestConnectionUiState.Loading -> {
             AsisElevatedCard {
                 Row(
@@ -491,13 +545,13 @@ private fun TestConnectionResultBanner(testConnectionState: TestConnectionUiStat
                     )
                     Column {
                         Text(
-                            text = "تست اتصال /sms-in موفق بود (HTTP ${testConnectionState.httpCode})",
+                            text = "تست اتصال /sms-in موفق بود (HTTP ${state.httpCode})",
                             style = MaterialTheme.typography.titleSmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "{\"ok\": true, \"status\": \"${testConnectionState.status}\"}",
+                            text = "{\"ok\": true, \"status\": \"${state.status}\"}",
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontFamily = FontFamily.Monospace,
                                 textDirection = TextDirection.Ltr
@@ -526,20 +580,20 @@ private fun TestConnectionResultBanner(testConnectionState: TestConnectionUiStat
                         modifier = Modifier.size(24.dp)
                     )
                     Text(
-                        text = "دریافت /sms-pending موفق (${testConnectionState.itemsCount} پرداخت منتظر)",
+                        text = "دریافت /sms-pending موفق (${state.itemsCount} پرداخت منتظر)",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                         fontWeight = FontWeight.Bold
                     )
                 }
                 Text(
-                    text = "• اختلاف ساعت سرور و گوشی: ${testConnectionState.clockOffsetMs} ms\n" +
-                        "• بازهٔ تطبیق: ${testConnectionState.matchWindowHours} ساعت\n" +
-                        "• سقف تأیید خودکار سرور: ${SmsParser.formatRial(testConnectionState.autoMaxToman)} تومان",
+                    text = "• اختلاف ساعت سرور و گوشی: ${state.clockOffsetMs} ms\n" +
+                        "• بازهٔ تطبیق: ${state.matchWindowHours} ساعت\n" +
+                        "• سقف تأیید خودکار سرور: ${SmsParser.formatRial(state.autoMaxToman)} تومان",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
-                if (testConnectionState.sampleItems.isNotEmpty()) {
+                if (state.sampleItems.isNotEmpty()) {
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)
@@ -550,7 +604,7 @@ private fun TestConnectionResultBanner(testConnectionState: TestConnectionUiStat
                                 .padding(10.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            for (item in testConnectionState.sampleItems) {
+                            for (item in state.sampleItems) {
                                 Text(
                                     text = "${item.kind} #${item.publicId} → ${SmsParser.formatToman(item.dueMinor)} تومان (${item.dueMinor} ریال)",
                                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
@@ -581,8 +635,8 @@ private fun TestConnectionResultBanner(testConnectionState: TestConnectionUiStat
                     )
                     Column {
                         Text(
-                            text = if (testConnectionState.httpCode != null) {
-                                "خطا در ارتباط با سرور (کد HTTP ${testConnectionState.httpCode})"
+                            text = if (state.httpCode != null) {
+                                "خطا در ارتباط با سرور (کد HTTP ${state.httpCode})"
                             } else {
                                 "خطا در ارتباط با سرور"
                             },
@@ -591,7 +645,7 @@ private fun TestConnectionResultBanner(testConnectionState: TestConnectionUiStat
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = testConnectionState.message,
+                            text = state.message,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onErrorContainer
                         )
@@ -601,5 +655,6 @@ private fun TestConnectionResultBanner(testConnectionState: TestConnectionUiStat
         }
 
         TestConnectionUiState.Idle -> Unit
+    }
     }
 }

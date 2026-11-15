@@ -222,4 +222,180 @@ class ExampleRobolectricTest {
             )
         }
     }
+
+    @Test
+    fun `verify real-time Green Yellow Red server connection status computation`() {
+        val configuredSettings = com.example.data.GatewaySettings(
+            endpointUrl = "https://panel.example.com/sms-in",
+            gatewayToken = "very_secure_token_1234567890",
+            serviceEnabled = true
+        )
+
+        // 1. Offline device -> RED
+        val offlineStatus = AsisViewModel.computeServerConnectionStatus(
+            isOnline = false,
+            settings = configuredSettings,
+            telemetry = com.example.network.ServerConnectionTelemetry()
+        )
+        assertEquals(com.example.network.ServerConnectionLevel.RED, offlineStatus.level)
+
+        // 2. Unconfigured server -> YELLOW
+        val unconfiguredStatus = AsisViewModel.computeServerConnectionStatus(
+            isOnline = true,
+            settings = com.example.data.GatewaySettings(),
+            telemetry = com.example.network.ServerConnectionTelemetry()
+        )
+        assertEquals(com.example.network.ServerConnectionLevel.YELLOW, unconfiguredStatus.level)
+
+        // 3. Online + checking / slow latency (>2000ms) -> YELLOW
+        val checkingStatus = AsisViewModel.computeServerConnectionStatus(
+            isOnline = true,
+            settings = configuredSettings,
+            telemetry = com.example.network.ServerConnectionTelemetry(isChecking = true, lastPingOk = null)
+        )
+        assertEquals(com.example.network.ServerConnectionLevel.YELLOW, checkingStatus.level)
+
+        val slowStatus = AsisViewModel.computeServerConnectionStatus(
+            isOnline = true,
+            settings = configuredSettings,
+            telemetry = com.example.network.ServerConnectionTelemetry(lastPingOk = true, httpCode = 200, latencyMs = 2500L)
+        )
+        assertEquals(com.example.network.ServerConnectionLevel.YELLOW, slowStatus.level)
+
+        // 4. Online + reachable server with fast latency -> GREEN
+        val connectedStatus = AsisViewModel.computeServerConnectionStatus(
+            isOnline = true,
+            settings = configuredSettings,
+            telemetry = com.example.network.ServerConnectionTelemetry(lastPingOk = true, httpCode = 200, latencyMs = 140L)
+        )
+        assertEquals(com.example.network.ServerConnectionLevel.GREEN, connectedStatus.level)
+        assertEquals(140L, connectedStatus.latencyMs)
+
+        // 5. Online device but server ping failed -> RED
+        val serverDownStatus = AsisViewModel.computeServerConnectionStatus(
+            isOnline = true,
+            settings = configuredSettings,
+            telemetry = com.example.network.ServerConnectionTelemetry(lastPingOk = false, httpCode = 502, lastErrorMessage = "Bad Gateway")
+        )
+        assertEquals(com.example.network.ServerConnectionLevel.RED, serverDownStatus.level)
+    }
+
+    @Test
+    fun `verify notification settings persistence, sensitive SMS classification, and push notification dispatch`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val context = app.applicationContext
+
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(
+            android.Manifest.permission.POST_NOTIFICATIONS
+        )
+        com.example.util.NotificationHelper.resetServerErrorThrottleForTests()
+
+        val repo = SettingsRepo.getInstance(context)
+        repo.setNotifyOnServerConnectionError(true)
+        repo.setNotifyOnSensitiveBankSms(true)
+        repo.setNotifyOnAmbiguousOrManual(true)
+        repo.setSensitiveSmsMinToman(5_000_000L)
+
+        val settings = repo.readSettings()
+        assertTrue(settings.notifyOnServerConnectionError)
+        assertTrue(settings.notifyOnSensitiveBankSms)
+        assertTrue(settings.notifyOnAmbiguousOrManual)
+        assertEquals(5_000_000L, settings.sensitiveSmsMinToman)
+
+        // 1. High-value deposit above 5,000,000 Toman threshold -> HIGH_VALUE_DEPOSIT
+        val highDepositSms = "بانک ملت\nواریز به حساب 0123456\nمبلغ: 80,000,000ریال\nمانده: 120,000,000ریال"
+        val highParsed = com.example.data.SmsParser.parse(highDepositSms)
+        val highDetection = com.example.data.SmsParser.classifySensitiveBankSms(
+            rawText = highDepositSms,
+            parsed = highParsed,
+            status = com.example.data.SmsStatus.NEW,
+            minTomanThreshold = 5_000_000L
+        )
+        assertNotNull(highDetection)
+        assertEquals(com.example.data.SensitiveSmsReason.HIGH_VALUE_DEPOSIT, highDetection?.reason)
+
+        // 2. Small deposit below 5,000,000 Toman threshold -> null (no sensitive alert)
+        val smallDepositSms = "بانک ملت\nواریز به حساب\nمبلغ: 2,000,000ریال\nمانده: 122,000,000ریال"
+        val smallParsed = com.example.data.SmsParser.parse(smallDepositSms)
+        val smallDetection = com.example.data.SmsParser.classifySensitiveBankSms(
+            rawText = smallDepositSms,
+            parsed = smallParsed,
+            status = com.example.data.SmsStatus.NEW,
+            minTomanThreshold = 5_000_000L
+        )
+        org.junit.Assert.assertNull(smallDetection)
+
+        // 3. Debit SMS -> DEBIT_OR_WITHDRAWAL
+        val debitSms = "بانک سامان\nبرداشت از حساب: 15,000,000 ریال\nمانده: 10,000,000 ریال"
+        val debitParsed = com.example.data.SmsParser.parse(debitSms)
+        val debitDetection = com.example.data.SmsParser.classifySensitiveBankSms(
+            rawText = debitSms,
+            parsed = debitParsed,
+            status = com.example.data.SmsStatus.IGNORED,
+            minTomanThreshold = 5_000_000L
+        )
+        assertNotNull(debitDetection)
+        assertEquals(com.example.data.SensitiveSmsReason.DEBIT_OR_WITHDRAWAL, debitDetection?.reason)
+        assertEquals(15_000_000L, debitDetection?.amountMinor)
+
+        // 4. Security / OTP SMS -> SECURITY_OR_OTP
+        val otpSms = "بانک ملی: رمز پویا 482910 محرمانه است"
+        val otpParsed = com.example.data.SmsParser.parse(otpSms)
+        val otpDetection = com.example.data.SmsParser.classifySensitiveBankSms(
+            rawText = otpSms,
+            parsed = otpParsed,
+            status = com.example.data.SmsStatus.IGNORED,
+            minTomanThreshold = 5_000_000L
+        )
+        assertNotNull(otpDetection)
+        assertEquals(com.example.data.SensitiveSmsReason.SECURITY_OR_OTP, otpDetection?.reason)
+
+        // 5. Verify NotificationHelper posts and cancels push notifications respecting preferences
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        val shadowNm = org.robolectric.Shadows.shadowOf(nm)
+        nm.cancelAll()
+
+        val errPosted = com.example.util.NotificationHelper.notifyServerConnectionError(
+            context = context,
+            errorTitle = "خطای ارتباط با سرور درگاه",
+            errorDetail = "سرور پاسخ نمی‌دهد",
+            httpCode = 503
+        )
+        assertTrue(errPosted)
+        assertTrue(shadowNm.allNotifications.isNotEmpty())
+
+        val smsPosted = com.example.util.NotificationHelper.notifySensitiveBankSms(
+            context = context,
+            smsId = 42L,
+            bankTitle = "بانک ملت",
+            categoryTitleFa = highDetection!!.categoryTitleFa,
+            amountMinor = highDetection.amountMinor,
+            smsBody = highDepositSms
+        )
+        assertTrue(smsPosted)
+        assertEquals(2, shadowNm.allNotifications.size)
+
+        // Disabling settings suppresses new alerts
+        repo.setNotifyOnServerConnectionError(false)
+        repo.setNotifyOnSensitiveBankSms(false)
+        com.example.util.NotificationHelper.resetServerErrorThrottleForTests()
+        org.junit.Assert.assertFalse(
+            com.example.util.NotificationHelper.notifyServerConnectionError(
+                context = context,
+                errorTitle = "خطای سرور",
+                errorDetail = "Timeout",
+                httpCode = 504
+            )
+        )
+        org.junit.Assert.assertFalse(
+            com.example.util.NotificationHelper.notifySensitiveBankSms(
+                context = context,
+                smsId = 43L,
+                bankTitle = "بانک ملت",
+                categoryTitleFa = "تست",
+                amountMinor = 50_000_000L,
+                smsBody = highDepositSms
+            )
+        )
+    }
 }

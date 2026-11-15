@@ -26,6 +26,19 @@ data class ParsedSms(
     val bankTitleFa: String
 )
 
+enum class SensitiveSmsReason(val titleFa: String) {
+    HIGH_VALUE_DEPOSIT("واریز کلان / حساس"),
+    DEBIT_OR_WITHDRAWAL("برداشت / تراکنش خروجی حساب"),
+    SECURITY_OR_OTP("پیامک امنیتی / رمز یک‌بارمصرف"),
+    AMBIGUOUS_OR_NEEDS_REVIEW("واریز نیازمند بررسی دستی")
+}
+
+data class SensitiveSmsDetection(
+    val reason: SensitiveSmsReason,
+    val amountMinor: Long?,
+    val categoryTitleFa: String
+)
+
 /**
  * Exact Kotlin port of `reference/sms_parse.py` per Section 3 of `APP_SIDE_APPROVAL_SPEC.md`.
  * Uses Unicode character classes `[\p{L}\p{N}_]` instead of `(?U)\w` so it works identically
@@ -70,6 +83,9 @@ object SmsParser {
     private val FEE = listOf("کارمزد", "wage", "fee")
     // Marketing / link texts are never a deposit (identical to PROMO_WORDS in the bot's sms_parse.py).
     private val PROMO = listOf("هدیه", "جایزه", "تخفیف", "قرعه", "لینک", "http", "www.")
+    private val SECURITY_OTP_KEYWORDS = listOf(
+        "رمز", "پویا", "کد تایید", "کد تأیید", "کد ورود", "مسدود", "غیرفعال", "otp", "pin"
+    )
 
     private val INVISIBLE = "\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u00a0\ufeff".toSet()
 
@@ -589,4 +605,94 @@ object SmsParser {
         "expired_window" -> "منقضی‌شده (عدم تطابق با هیچ فاکتوری در بازه زمانی مجاز)"
         else -> reason
     }
+
+    /**
+     * Classifies an incoming bank SMS for real-time sensitive SMS push alerts:
+     * - High-value deposits (>= `minTomanThreshold`, or all deposits if `minTomanThreshold <= 0`)
+     * - Unexpected bank debits / withdrawals
+     * - Bank OTP / security alert messages
+     * - Unknown / ambiguous / manual-review deposits when `includeReviewAlerts` is enabled
+     */
+    fun classifySensitiveBankSms(
+        rawText: String,
+        parsed: Parsed,
+        status: SmsStatus,
+        minTomanThreshold: Long,
+        includeReviewAlerts: Boolean = true
+    ): SensitiveSmsDetection? {
+        if (parsed.reason == "promo" || parsed.reason == "test" || parsed.reason == "empty") {
+            return null
+        }
+        val norm = normalize(rawText)
+        val normLower = norm.lowercase(Locale.ROOT)
+        val minMinor = if (minTomanThreshold > 0L) minTomanThreshold * 10L else 0L
+
+        if (parsed.amountMinor != null && (minMinor == 0L || parsed.amountMinor >= minMinor)) {
+            return SensitiveSmsDetection(
+                reason = SensitiveSmsReason.HIGH_VALUE_DEPOSIT,
+                amountMinor = parsed.amountMinor,
+                categoryTitleFa = if (minMinor == 0L) {
+                    "واریز بانکی جدید (${formatToman(parsed.amountMinor)} تومان)"
+                } else {
+                    "واریز کلان و حساس (${formatToman(parsed.amountMinor)} تومان)"
+                }
+            )
+        }
+
+        if (has(SECURITY_OTP_KEYWORDS, normLower)) {
+            return SensitiveSmsDetection(
+                reason = SensitiveSmsReason.SECURITY_OR_OTP,
+                amountMinor = parsed.amountMinor,
+                categoryTitleFa = SensitiveSmsReason.SECURITY_OR_OTP.titleFa
+            )
+        }
+
+        if (parsed.reason == "debit") {
+            val extractedDebitMinor = extractRoughAmountMinor(norm)
+            return SensitiveSmsDetection(
+                reason = SensitiveSmsReason.DEBIT_OR_WITHDRAWAL,
+                amountMinor = extractedDebitMinor,
+                categoryTitleFa = if (extractedDebitMinor != null) {
+                    "برداشت از حساب (${formatToman(extractedDebitMinor)} تومان)"
+                } else {
+                    SensitiveSmsReason.DEBIT_OR_WITHDRAWAL.titleFa
+                }
+            )
+        }
+
+        if (includeReviewAlerts && (
+                status == SmsStatus.UNKNOWN_DEPOSIT ||
+                    status == SmsStatus.MANUAL ||
+                    status == SmsStatus.AMBIGUOUS ||
+                    parsed.reason == "mixed_direction" ||
+                    parsed.reason == "several_amounts"
+                )
+        ) {
+            return SensitiveSmsDetection(
+                reason = SensitiveSmsReason.AMBIGUOUS_OR_NEEDS_REVIEW,
+                amountMinor = parsed.amountMinor,
+                categoryTitleFa = SensitiveSmsReason.AMBIGUOUS_OR_NEEDS_REVIEW.titleFa
+            )
+        }
+
+        return null
+    }
+
+    private fun extractRoughAmountMinor(normalizedText: String): Long? {
+        var cleaned = normalizedText
+        for (p in NOISE) {
+            cleaned = p.replace(cleaned) { " ".repeat(it.value.length) }
+        }
+        for (m in NUM.findAll(cleaned)) {
+            val start = m.range.first
+            val before = cleaned.substring(maxOf(0, start - 14), start)
+            val tail = before.trimEnd(' ', ':', '：', '=', '-')
+            if (has(BALANCE, tail.takeLast(12)) || has(FEE, tail.takeLast(10))) continue
+            val value = m.groupValues[2].replace(",", "").toLongOrNull() ?: continue
+            val isToman = "تومان" in normalizedText && "ریال" !in normalizedText && "ريال" !in normalizedText
+            return if (isToman) value * 10L else value
+        }
+        return null
+    }
 }
+

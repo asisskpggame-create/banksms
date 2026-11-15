@@ -10,8 +10,17 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -72,6 +81,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -94,6 +104,7 @@ import com.example.ui.BanksScreen
 import com.example.ui.HomeScreen
 import com.example.ui.LogsScreen
 import com.example.ui.SettingsScreen
+import com.example.ui.components.AsisMotion
 import com.example.ui.components.StatusPill
 import com.example.ui.theme.MyApplicationTheme
 import com.example.util.NotificationHelper
@@ -144,6 +155,7 @@ fun AsisAppScreen(
 
     val settings by asisViewModel.settingsState.collectAsStateWithLifecycle()
     val isOnline by asisViewModel.isOnlineState.collectAsStateWithLifecycle()
+    val serverStatus by asisViewModel.serverStatusState.collectAsStateWithLifecycle()
     val allLogs by asisViewModel.allLogs.collectAsStateWithLifecycle()
     val allInvoices by asisViewModel.allInvoices.collectAsStateWithLifecycle()
     val queueCount by asisViewModel.queueCount.collectAsStateWithLifecycle()
@@ -337,33 +349,23 @@ fun AsisAppScreen(
                             }
                         },
                         actions = {
-                            val (statusText, statusColor, pulsing) = when {
-                                !settings.isConfigured -> Triple(
-                                    "نیازمند تنظیم",
-                                    MaterialTheme.colorScheme.tertiary,
-                                    false
-                                )
-                                settings.serviceEnabled && isOnline -> Triple(
-                                    "آنلاین و فعال",
-                                    MaterialTheme.colorScheme.primary,
-                                    true
-                                )
-                                settings.serviceEnabled -> Triple(
-                                    "آفلاین",
-                                    MaterialTheme.colorScheme.tertiary,
-                                    false
-                                )
-                                else -> Triple(
-                                    "متوقف",
-                                    MaterialTheme.colorScheme.onSurfaceVariant,
-                                    false
-                                )
+                            val statusColor = when (serverStatus.level) {
+                                com.example.network.ServerConnectionLevel.GREEN -> Color(0xFF10B981)
+                                com.example.network.ServerConnectionLevel.YELLOW -> Color(0xFFF59E0B)
+                                com.example.network.ServerConnectionLevel.RED -> Color(0xFFEF4444)
+                            }
+                            val statusText = when (serverStatus.level) {
+                                com.example.network.ServerConnectionLevel.GREEN -> "آنلاین"
+                                com.example.network.ServerConnectionLevel.YELLOW -> if (!settings.isConfigured) "نیازمند تنظیم" else "هشدار"
+                                com.example.network.ServerConnectionLevel.RED -> "آفلاین"
                             }
                             StatusPill(
                                 label = statusText,
                                 color = statusColor,
-                                isPulsing = pulsing,
-                                modifier = Modifier.padding(end = 12.dp)
+                                isPulsing = serverStatus.level == com.example.network.ServerConnectionLevel.GREEN || serverStatus.isChecking,
+                                modifier = Modifier
+                                    .padding(end = 12.dp)
+                                    .clickable { asisViewModel.checkServerConnectionNow() }
                             )
                         },
                         colors = TopAppBarDefaults.topAppBarColors(
@@ -462,14 +464,25 @@ fun AsisAppScreen(
                         }
 
                         // Prominent circular orange/emerald power toggle button overlapping the center of the bottom bar
+                        val powerColor by animateColorAsState(
+                            targetValue = if (settings.serviceEnabled) Color(0xFFF59E0B) else Color(0xFF475569),
+                            animationSpec = AsisMotion.smoothSpring(),
+                            label = "powerButtonColor"
+                        )
+                        val powerScale by animateFloatAsState(
+                            targetValue = if (settings.serviceEnabled) 1.04f else 0.96f,
+                            animationSpec = AsisMotion.snappySpring(),
+                            label = "powerButtonScale"
+                        )
                         Surface(
                             shape = CircleShape,
-                            color = if (settings.serviceEnabled) Color(0xFFF59E0B) else Color(0xFF475569),
+                            color = powerColor,
                             border = BorderStroke(4.dp, Color(0xFF141821)),
-                            shadowElevation = 6.dp,
+                            shadowElevation = if (settings.serviceEnabled) 10.dp else 4.dp,
                             modifier = Modifier
                                 .offset(y = (-14).dp)
                                 .size(54.dp)
+                                .scale(powerScale)
                                 .clickable {
                                     asisViewModel.setServiceEnabled(!settings.serviceEnabled)
                                 }
@@ -528,9 +541,32 @@ fun AsisAppScreen(
                         .fillMaxHeight(),
                     contentAlignment = Alignment.TopCenter
                 ) {
-                    Crossfade(
+                    AnimatedContent(
                         targetState = currentTab,
-                        animationSpec = tween(durationMillis = 200),
+                        transitionSpec = {
+                            val movingForward = targetState.ordinal > initialState.ordinal
+                            val enterOffset: (Int) -> Int = { fullWidth ->
+                                if (movingForward) -fullWidth / 10 else fullWidth / 10
+                            }
+                            val exitOffset: (Int) -> Int = { fullWidth ->
+                                if (movingForward) fullWidth / 14 else -fullWidth / 14
+                            }
+                            (slideInHorizontally(
+                                animationSpec = AsisMotion.offsetSpring(),
+                                initialOffsetX = enterOffset
+                            ) + fadeIn(tween(220)) + scaleIn(
+                                initialScale = 0.98f,
+                                animationSpec = AsisMotion.smoothSpring()
+                            )).togetherWith(
+                                slideOutHorizontally(
+                                    animationSpec = tween(170),
+                                    targetOffsetX = exitOffset
+                                ) + fadeOut(tween(150)) + scaleOut(
+                                    targetScale = 0.98f,
+                                    animationSpec = tween(150)
+                                )
+                            )
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .widthIn(max = 720.dp)
@@ -549,6 +585,8 @@ fun AsisAppScreen(
                                 HomeScreen(
                                     settings = settings,
                                     isOnline = isOnline,
+                                    serverStatus = serverStatus,
+                                    onCheckServerConnection = asisViewModel::checkServerConnectionNow,
                                     hasSmsPermissions = hasSmsPermissions,
                                     hasNotificationPermission = hasNotificationPermission,
                                     isIgnoringBatteryOptimizations = isIgnoringBatteryOptimizations,
@@ -598,7 +636,14 @@ fun AsisAppScreen(
                                 onToggleAutoApproveInApp = asisViewModel::setAutoApproveInApp,
                                 onTestConnection = asisViewModel::runTestConnection,
                                 onTestPendingEndpoint = asisViewModel::runTestPendingEndpoint,
-                                onResetTestState = asisViewModel::resetTestConnectionState
+                                onResetTestState = asisViewModel::resetTestConnectionState,
+                                hasNotificationPermission = hasNotificationPermission,
+                                onRequestNotificationPermission = requestAllNeededPermissions,
+                                onToggleNotifyServerError = asisViewModel::setNotifyOnServerConnectionError,
+                                onToggleNotifySensitiveSms = asisViewModel::setNotifyOnSensitiveBankSms,
+                                onToggleNotifyAmbiguousManual = asisViewModel::setNotifyOnAmbiguousOrManual,
+                                onUpdateSensitiveSmsMinToman = asisViewModel::setSensitiveSmsMinToman,
+                                onSendTestNotification = asisViewModel::sendTestPushNotification
                             )
                         }
                     }
@@ -615,8 +660,14 @@ private fun NavTabIcon(
     badgeCount: Int,
     hasErrors: Boolean
 ) {
+    val iconScale by animateFloatAsState(
+        targetValue = if (selected) 1.15f else 1.0f,
+        animationSpec = AsisMotion.snappySpring(),
+        label = "navIconScale_${tab.route}"
+    )
     if (tab == AsisTab.LOGS && badgeCount > 0) {
         BadgedBox(
+            modifier = Modifier.scale(iconScale),
             badge = {
                 Badge(
                     containerColor = if (hasErrors) {
@@ -637,7 +688,8 @@ private fun NavTabIcon(
     } else {
         Icon(
             imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-            contentDescription = stringResource(tab.titleRes)
+            contentDescription = stringResource(tab.titleRes),
+            modifier = Modifier.scale(iconScale)
         )
     }
 }

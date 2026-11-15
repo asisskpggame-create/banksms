@@ -5,11 +5,27 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -38,6 +54,7 @@ import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.HourglassTop
@@ -67,6 +84,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -78,11 +96,17 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.GatewaySettings
 import com.example.data.SmsParser
 import com.example.data.SmsRecord
+import com.example.network.ServerConnectionLevel
+import com.example.network.ServerConnectionStatusUi
+import com.example.ui.components.AnimatedSpringCounter
 import com.example.ui.components.AsisElevatedCard
+import com.example.ui.components.AsisMotion
+import com.example.ui.components.AsisSpringModal
 import com.example.ui.components.LivePulseDot
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusPill
@@ -114,6 +138,12 @@ fun HomeScreen(
     invoices: List<com.example.data.PendingInvoiceEntity> = emptyList(),
     onRegisterInvoice: (publicId: String, amountToman: Long, kind: String) -> Unit = { _, _, _ -> },
     onRemoveInvoice: (publicId: String) -> Unit = {},
+    serverStatus: ServerConnectionStatusUi = AsisViewModel.computeServerConnectionStatus(
+        isOnline = isOnline,
+        settings = settings,
+        telemetry = com.example.network.ServerConnectionTelemetry()
+    ),
+    onCheckServerConnection: () -> Unit = onFlushQueue,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -148,6 +178,13 @@ fun HomeScreen(
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // Real-time Server Connection Status Widget (Green / Yellow / Red) at top of Home
+        ServerConnectionStatusWidget(
+            status = serverStatus,
+            onRefreshClick = onCheckServerConnection,
+            onOpenSettings = onNavigateToSettings
+        )
+
         ServiceHeroCard(
             settings = settings,
             isOnline = isOnline,
@@ -157,8 +194,12 @@ fun HomeScreen(
 
         AnimatedVisibility(
             visible = !settings.lastTokenError.isNullOrBlank(),
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically()
+            enter = fadeIn(tween(220)) +
+                expandVertically(animationSpec = AsisMotion.smoothSpring()) +
+                scaleIn(initialScale = 0.96f, animationSpec = AsisMotion.bouncySpring()),
+            exit = fadeOut(tween(160)) +
+                shrinkVertically(animationSpec = AsisMotion.smoothSpring()) +
+                scaleOut(targetScale = 0.96f, animationSpec = tween(160))
         ) {
             TokenErrorAlertBanner(
                 errorMessage = settings.lastTokenError.orEmpty(),
@@ -168,8 +209,12 @@ fun HomeScreen(
 
         AnimatedVisibility(
             visible = !hasSmsPermissions || !hasNotificationPermission,
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically()
+            enter = fadeIn(tween(220)) +
+                expandVertically(animationSpec = AsisMotion.smoothSpring()) +
+                scaleIn(initialScale = 0.96f, animationSpec = AsisMotion.bouncySpring()),
+            exit = fadeOut(tween(160)) +
+                shrinkVertically(animationSpec = AsisMotion.smoothSpring()) +
+                scaleOut(targetScale = 0.96f, animationSpec = tween(160))
         ) {
             PermissionsRequiredCard(
                 hasSmsPermissions = hasSmsPermissions,
@@ -181,8 +226,12 @@ fun HomeScreen(
         // Battery Optimization Exemption Banner for uninterrupted background SMS forwarding
         AnimatedVisibility(
             visible = !batteryOptIgnored,
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically()
+            enter = fadeIn(tween(220)) +
+                expandVertically(animationSpec = AsisMotion.smoothSpring()) +
+                scaleIn(initialScale = 0.96f, animationSpec = AsisMotion.bouncySpring()),
+            exit = fadeOut(tween(160)) +
+                shrinkVertically(animationSpec = AsisMotion.smoothSpring()) +
+                scaleOut(targetScale = 0.96f, animationSpec = tween(160))
         ) {
             AsisElevatedCard(
                 modifier = Modifier.testTag("battery_optimization_card"),
@@ -284,8 +333,12 @@ fun HomeScreen(
         // Failed Send Error Log & Manual Retry Card
         AnimatedVisibility(
             visible = errorLogs.isNotEmpty(),
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically()
+            enter = fadeIn(tween(220)) +
+                expandVertically(animationSpec = AsisMotion.smoothSpring()) +
+                scaleIn(initialScale = 0.96f, animationSpec = AsisMotion.bouncySpring()),
+            exit = fadeOut(tween(160)) +
+                shrinkVertically(animationSpec = AsisMotion.smoothSpring()) +
+                scaleOut(targetScale = 0.96f, animationSpec = tween(160))
         ) {
             FailedDeliveryErrorLogCard(
                 errorLogs = errorLogs,
@@ -426,6 +479,257 @@ fun HomeScreen(
 }
 
 @Composable
+private fun ServerConnectionStatusWidget(
+    status: ServerConnectionStatusUi,
+    onRefreshClick: () -> Unit,
+    onOpenSettings: () -> Unit
+) {
+    val greenColor = Color(0xFF10B981)
+    val yellowColor = Color(0xFFF59E0B)
+    val redColor = Color(0xFFEF4444)
+
+    val targetAccent = when (status.level) {
+        ServerConnectionLevel.GREEN -> greenColor
+        ServerConnectionLevel.YELLOW -> yellowColor
+        ServerConnectionLevel.RED -> redColor
+    }
+    val accentColor by animateColorAsState(
+        targetValue = targetAccent,
+        animationSpec = AsisMotion.smoothSpring(),
+        label = "serverWidgetAccent"
+    )
+    val containerColor by animateColorAsState(
+        targetValue = when (status.level) {
+            ServerConnectionLevel.GREEN -> Color(0xFF0A241E)
+            ServerConnectionLevel.YELLOW -> Color(0xFF281D0B)
+            ServerConnectionLevel.RED -> Color(0xFF2B1117)
+        },
+        animationSpec = AsisMotion.smoothSpring(),
+        label = "serverWidgetBg"
+    )
+
+    val statusIcon = when (status.level) {
+        ServerConnectionLevel.GREEN -> Icons.Default.CloudDone
+        ServerConnectionLevel.YELLOW -> Icons.Default.CloudSync
+        ServerConnectionLevel.RED -> Icons.Default.CloudOff
+    }
+
+    val badgeLabel = when (status.level) {
+        ServerConnectionLevel.GREEN -> status.latencyMs?.let { "${it} ms" } ?: "متصل"
+        ServerConnectionLevel.YELLOW -> if (status.isChecking) "در حال تست..." else "هشدار"
+        ServerConnectionLevel.RED -> "آفلاین"
+    }
+
+    val spinAngle = if (status.isChecking) {
+        val transition = rememberInfiniteTransition(label = "pingSpin")
+        val angle by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 900, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "pingSpinAngle"
+        )
+        angle
+    } else {
+        0f
+    }
+
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = containerColor,
+        border = BorderStroke(1.2.dp, accentColor.copy(alpha = 0.45f)),
+        shadowElevation = 4.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(animationSpec = AsisMotion.smoothSpring())
+            .clip(RoundedCornerShape(20.dp))
+            .clickable {
+                if (status.needsConfiguration) onOpenSettings() else onRefreshClick()
+            }
+            .testTag("server_connection_status_widget")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    // Glowing Icon Box
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(RoundedCornerShape(13.dp))
+                            .background(accentColor.copy(alpha = 0.16f))
+                            .border(1.dp, accentColor.copy(alpha = 0.40f), RoundedCornerShape(13.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = statusIcon,
+                            contentDescription = status.titleFa,
+                            tint = accentColor,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            LivePulseDot(
+                                isActive = status.level == ServerConnectionLevel.GREEN || status.isChecking,
+                                activeColor = accentColor,
+                                inactiveColor = accentColor
+                            )
+                            Text(
+                                text = status.titleFa,
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 14.sp
+                                ),
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Text(
+                            text = status.detailFa,
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                            color = Color.White.copy(alpha = 0.78f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // 3-Color Traffic Light Capsule + Refresh Button
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    // Mini Tri-Color LED Capsule (Red / Yellow / Green)
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = Color(0xFF0B1018),
+                        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.35f)),
+                        modifier = Modifier.testTag("server_status_tri_led")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            val leds = listOf(
+                                ServerConnectionLevel.GREEN to greenColor,
+                                ServerConnectionLevel.YELLOW to yellowColor,
+                                ServerConnectionLevel.RED to redColor
+                            )
+                            for ((ledLevel, ledColor) in leds) {
+                                val isActiveLed = status.level == ledLevel
+                                val ledSize by animateDpAsState(
+                                    targetValue = if (isActiveLed) 10.dp else 7.dp,
+                                    animationSpec = AsisMotion.snappySpring(),
+                                    label = "ledSize_${ledLevel.name}"
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(ledSize)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (isActiveLed) ledColor else ledColor.copy(alpha = 0.22f)
+                                        )
+                                        .then(
+                                            if (isActiveLed) {
+                                                Modifier.border(
+                                                    1.5.dp,
+                                                    Color.White.copy(alpha = 0.7f),
+                                                    CircleShape
+                                                )
+                                            } else {
+                                                Modifier
+                                            }
+                                        )
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(2.dp))
+                            AnimatedContent(
+                                targetState = badgeLabel,
+                                transitionSpec = {
+                                    (fadeIn(tween(180)) + slideInVertically(AsisMotion.offsetSpring()) { it / 3 })
+                                        .togetherWith(fadeOut(tween(120)) + slideOutVertically { -it / 3 })
+                                },
+                                label = "serverBadgeLabel"
+                            ) { labelText ->
+                                Text(
+                                    text = labelText,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 11.sp
+                                    ),
+                                    color = accentColor
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (status.lastCheckedAtMs != null) {
+                            val formattedTime = remember(status.lastCheckedAtMs) {
+                                SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+                                    .format(Date(status.lastCheckedAtMs))
+                            }
+                            Text(
+                                text = "بررسی: $formattedTime",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = Color.White.copy(alpha = 0.55f)
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color.White.copy(alpha = 0.08f),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = !status.isChecking, onClick = onRefreshClick)
+                                .testTag("refresh_server_status_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "بررسی لحظه‌ای اتصال سرور",
+                                tint = accentColor,
+                                modifier = Modifier
+                                    .padding(5.dp)
+                                    .size(16.dp)
+                                    .rotate(spinAngle)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ServiceHeroCard(
     settings: GatewaySettings,
     isOnline: Boolean,
@@ -442,15 +746,21 @@ private fun ServiceHeroCard(
         else -> listOf(Color(0xFF1E293B), Color(0xFF111C2D), Color(0xFF09111E))
     }
 
-    val glowColor = when {
+    val targetGlowColor = when {
         isFullyActive -> Color(0xFF10B981)
         !isConfigured -> Color(0xFFF59E0B)
         else -> Color(0xFF64748B)
     }
+    val glowColor by animateColorAsState(
+        targetValue = targetGlowColor,
+        animationSpec = AsisMotion.smoothSpring(),
+        label = "heroGlowColor"
+    )
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .animateContentSize(animationSpec = AsisMotion.smoothSpring())
             .clip(RoundedCornerShape(24.dp))
             .background(Brush.linearGradient(gradientColors))
             .border(
@@ -825,12 +1135,21 @@ private fun StatCard(
                             modifier = Modifier.size(16.dp)
                         )
                     }
-                    Text(
-                        text = value,
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = accentColor,
-                        fontWeight = FontWeight.Bold
-                    )
+                    val numericCount = value.toIntOrNull()
+                    if (numericCount != null) {
+                        AnimatedSpringCounter(
+                            count = numericCount,
+                            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                            color = accentColor
+                        )
+                    } else {
+                        Text(
+                            text = value,
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = accentColor,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
                 Text(
                     text = title,
@@ -903,94 +1222,108 @@ private fun LastMatchedSummaryCard(
             }
         }
 
-        if (lastMatchedLog == null) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.History,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
-                        modifier = Modifier.size(28.dp)
+        AnimatedContent(
+            targetState = lastMatchedLog,
+            transitionSpec = {
+                (fadeIn(tween(220)) +
+                    slideInVertically(AsisMotion.offsetSpring()) { it / 8 } +
+                    scaleIn(initialScale = 0.97f, animationSpec = AsisMotion.bouncySpring()))
+                    .togetherWith(
+                        fadeOut(tween(150)) +
+                            scaleOut(targetScale = 0.97f, animationSpec = tween(150))
                     )
-                    Text(
-                        text = "هنوز واریزی با سفارش تطبیق و تأیید نشده است. پس از دریافت پیامک بانکی واقعی، خلاصهٔ رسید تأییدشده اینجا نمایش داده می‌شود.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        } else {
-            val timeStr = rememberFormattedTime(lastMatchedLog.decidedMs ?: lastMatchedLog.receivedMs)
-            val matchedBankSpec = remember(lastMatchedLog.bank, lastMatchedLog.bankTitle) {
-                BankVisualCatalog.findByCodeOrTitle(lastMatchedLog.bank, lastMatchedLog.bankTitle)
-            }
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+            },
+            label = "lastMatchedCardContent"
+        ) { currentLog ->
+            if (currentLog == null) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        StatusPill(
-                            label = lastMatchedLog.matchedLabelFa() ?: "تأییدشده",
-                            color = MaterialTheme.colorScheme.primary,
-                            icon = Icons.Default.CheckCircle
-                        )
-                        Text(
-                            text = timeStr,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        if (matchedBankSpec != null) {
-                            BankLogoBadge(spec = matchedBankSpec, size = 44.dp)
+                        Icon(
+                            imageVector = Icons.Default.History,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Text(
+                            text = "هنوز واریزی با سفارش تطبیق و تأیید نشده است. پس از دریافت پیامک بانکی واقعی، خلاصهٔ رسید تأییدشده اینجا نمایش داده می‌شود.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            } else {
+                val timeStr = rememberFormattedTime(currentLog.decidedMs ?: currentLog.receivedMs)
+                val matchedBankSpec = remember(currentLog.bank, currentLog.bankTitle) {
+                    BankVisualCatalog.findByCodeOrTitle(currentLog.bank, currentLog.bankTitle)
+                }
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            StatusPill(
+                                label = currentLog.matchedLabelFa() ?: "تأییدشده",
+                                color = MaterialTheme.colorScheme.primary,
+                                icon = Icons.Default.CheckCircle
+                            )
+                            Text(
+                                text = timeStr,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                        Column {
-                            if (lastMatchedLog.amountMinor != null) {
-                                Text(
-                                    text = "${SmsParser.formatToman(lastMatchedLog.amountMinor)} تومان",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = "${lastMatchedLog.bankTitle} • ${SmsParser.formatRial(lastMatchedLog.amountMinor)} ریال",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            if (matchedBankSpec != null) {
+                                BankLogoBadge(spec = matchedBankSpec, size = 44.dp)
+                            }
+                            Column {
+                                if (currentLog.amountMinor != null) {
+                                    Text(
+                                        text = "${SmsParser.formatToman(currentLog.amountMinor)} تومان",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        text = "${currentLog.bankTitle} • ${SmsParser.formatRial(currentLog.amountMinor)} ریال",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
+                        Text(
+                            text = currentLog.body,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
-                    Text(
-                        text = lastMatchedLog.body,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
             }
         }
@@ -1272,8 +1605,15 @@ private fun SmartAmountMatchingModuleCard(
             }
         }
 
-        if (waitingInvoices.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        AnimatedVisibility(
+            visible = waitingInvoices.isNotEmpty(),
+            enter = fadeIn(tween(200)) + expandVertically(animationSpec = AsisMotion.smoothSpring()),
+            exit = fadeOut(tween(150)) + shrinkVertically(animationSpec = AsisMotion.smoothSpring())
+        ) {
+            Column(
+                modifier = Modifier.animateContentSize(animationSpec = AsisMotion.smoothSpring()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 for (inv in waitingInvoices.take(3)) {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
@@ -1353,62 +1693,66 @@ private fun RegisterInvoiceInquiryDialog(
     var publicId by rememberSaveable { mutableStateOf("ORD-${(100..999).random()}") }
     var amountTomanStr by rememberSaveable { mutableStateOf("5000000") }
 
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(22.dp),
-        title = {
+    AsisSpringModal(onDismissRequest = onDismiss) { triggerClose ->
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(22.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
             Text(
                 text = "استعلام / ثبت فاکتور در دیتابیس",
-                fontWeight = FontWeight.Bold
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
             )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "مبلغ فاکتور را وارد کنید؛ اپلیکیشن بلافاصله لاگ پیامک‌های دریافتی را بررسی کرده و اگر این مبلغ واریز شده باشد در کمتر از ۱ دقیقه تأیید می‌کند (یا منتظر پیامک می‌ماند).",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                androidx.compose.material3.OutlinedTextField(
-                    value = publicId,
-                    onValueChange = { publicId = it },
-                    label = { Text("شناسه فاکتور (مثلاً ORD-105)") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("invoice_id_input")
-                )
-                androidx.compose.material3.OutlinedTextField(
-                    value = amountTomanStr,
-                    onValueChange = { amountTomanStr = it.filter { ch -> ch.isDigit() } },
-                    label = { Text("مبلغ فاکتور (به تومان)") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("invoice_amount_toman_input")
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val amountToman = amountTomanStr.trim().toLongOrNull() ?: 0L
-                    onConfirm(publicId, amountToman, "order")
-                },
-                enabled = (amountTomanStr.trim().toLongOrNull() ?: 0L) > 0L,
+            Text(
+                text = "مبلغ فاکتور را وارد کنید؛ اپلیکیشن بلافاصله لاگ پیامک‌های دریافتی را بررسی کرده و اگر این مبلغ واریز شده باشد در کمتر از ۱ دقیقه تأیید می‌کند (یا منتظر پیامک می‌ماند).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            androidx.compose.material3.OutlinedTextField(
+                value = publicId,
+                onValueChange = { publicId = it },
+                label = { Text("شناسه فاکتور (مثلاً ORD-105)") },
+                singleLine = true,
                 shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.testTag("confirm_register_invoice_button")
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("invoice_id_input")
+            )
+            androidx.compose.material3.OutlinedTextField(
+                value = amountTomanStr,
+                onValueChange = { amountTomanStr = it.filter { ch -> ch.isDigit() } },
+                label = { Text("مبلغ فاکتور (به تومان)") },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("invoice_amount_toman_input")
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("بررسی لاگ و ثبت فاکتور")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("انصراف")
+                TextButton(onClick = { triggerClose(onDismiss) }) {
+                    Text("انصراف")
+                }
+                Button(
+                    onClick = {
+                        val amountToman = amountTomanStr.trim().toLongOrNull() ?: 0L
+                        triggerClose { onConfirm(publicId, amountToman, "order") }
+                    },
+                    enabled = (amountTomanStr.trim().toLongOrNull() ?: 0L) > 0L,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.testTag("confirm_register_invoice_button")
+                ) {
+                    Text("بررسی لاگ و ثبت فاکتور")
+                }
             }
         }
-    )
+    }
 }
+
 

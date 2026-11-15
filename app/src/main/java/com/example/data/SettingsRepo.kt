@@ -29,7 +29,11 @@ data class GatewaySettings(
     val lastTokenError: String? = null,
     val lastClockOffsetMs: Long = 0L,
     val lastServerWindowHours: Int = 24,
-    val lastServerMaxToman: Long = 0L
+    val lastServerMaxToman: Long = 0L,
+    val notifyOnServerConnectionError: Boolean = true,
+    val notifyOnSensitiveBankSms: Boolean = true,
+    val notifyOnAmbiguousOrManual: Boolean = true,
+    val sensitiveSmsMinToman: Long = DEFAULT_SENSITIVE_SMS_MIN_TOMAN
 ) {
     val isConfigured: Boolean
         get() = endpointUrl.startsWith("https://", ignoreCase = true) && gatewayToken.trim().length >= 20
@@ -70,6 +74,8 @@ data class GatewaySettings(
             "registeredBankCards=${registeredBankCards.size})"
 
     companion object {
+        const val DEFAULT_SENSITIVE_SMS_MIN_TOMAN = 5_000_000L
+
         val DEFAULT_REGISTERED_BANK_CARDS: List<RegisteredBankCard> = listOf(
             RegisteredBankCard(
                 id = "default_mehr_iran",
@@ -183,7 +189,14 @@ class SettingsRepo private constructor(context: Context) {
                 lastTokenError = prefs.getString(KEY_LAST_TOKEN_ERROR, null),
                 lastClockOffsetMs = prefs.getLong(KEY_LAST_CLOCK_OFFSET_MS, 0L),
                 lastServerWindowHours = prefs.getInt(KEY_LAST_SERVER_WINDOW_HOURS, 24),
-                lastServerMaxToman = prefs.getLong(KEY_LAST_SERVER_MAX_TOMAN, 0L)
+                lastServerMaxToman = prefs.getLong(KEY_LAST_SERVER_MAX_TOMAN, 0L),
+                notifyOnServerConnectionError = prefs.getBoolean(KEY_NOTIFY_SERVER_ERROR, true),
+                notifyOnSensitiveBankSms = prefs.getBoolean(KEY_NOTIFY_SENSITIVE_SMS, true),
+                notifyOnAmbiguousOrManual = prefs.getBoolean(KEY_NOTIFY_AMBIGUOUS_MANUAL, true),
+                sensitiveSmsMinToman = prefs.getLong(
+                    KEY_SENSITIVE_SMS_MIN_TOMAN,
+                    GatewaySettings.DEFAULT_SENSITIVE_SMS_MIN_TOMAN
+                )
             )
         } catch (_: Throwable) {
             GatewaySettings(selectedBankCodes = defaultBanks)
@@ -281,6 +294,26 @@ class SettingsRepo private constructor(context: Context) {
         _settingsFlow.value = readSettings()
     }
 
+    fun setNotifyOnServerConnectionError(enabled: Boolean) {
+        safeEdit { putBoolean(KEY_NOTIFY_SERVER_ERROR, enabled) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun setNotifyOnSensitiveBankSms(enabled: Boolean) {
+        safeEdit { putBoolean(KEY_NOTIFY_SENSITIVE_SMS, enabled) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun setNotifyOnAmbiguousOrManual(enabled: Boolean) {
+        safeEdit { putBoolean(KEY_NOTIFY_AMBIGUOUS_MANUAL, enabled) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun setSensitiveSmsMinToman(minToman: Long) {
+        safeEdit { putLong(KEY_SENSITIVE_SMS_MIN_TOMAN, maxOf(0L, minToman)) }
+        _settingsFlow.value = readSettings()
+    }
+
     fun shouldProcessBank(senderOrBankCode: String, body: String): Boolean {
         val current = readSettings()
         if (!current.filterBanksEnabled) return true
@@ -302,6 +335,10 @@ class SettingsRepo private constructor(context: Context) {
         private const val KEY_LAST_CLOCK_OFFSET_MS = "last_clock_offset_ms"
         private const val KEY_LAST_SERVER_WINDOW_HOURS = "last_server_window_hours"
         private const val KEY_LAST_SERVER_MAX_TOMAN = "last_server_max_toman"
+        private const val KEY_NOTIFY_SERVER_ERROR = "notify_server_error"
+        private const val KEY_NOTIFY_SENSITIVE_SMS = "notify_sensitive_sms"
+        private const val KEY_NOTIFY_AMBIGUOUS_MANUAL = "notify_ambiguous_manual"
+        private const val KEY_SENSITIVE_SMS_MIN_TOMAN = "sensitive_sms_min_toman"
 
         @Volatile
         private var INSTANCE: SettingsRepo? = null

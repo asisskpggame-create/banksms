@@ -1,16 +1,17 @@
 package com.example.ui
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -59,7 +60,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -75,11 +75,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.example.data.SmsParser
 import com.example.data.SmsRecord
 import com.example.data.SmsStatus
+import com.example.ui.components.AsisMotion
+import com.example.ui.components.AsisSpringModal
 import com.example.ui.components.StatusPill
 
 private enum class LogFilter(val labelFa: String) {
@@ -219,7 +219,11 @@ fun LogsScreen(
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (errorRecordsCount > 0) {
+                AnimatedVisibility(
+                    visible = errorRecordsCount > 0,
+                    enter = fadeIn(tween(200)) + scaleIn(initialScale = 0.88f, animationSpec = AsisMotion.bouncySpring()),
+                    exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.88f)
+                ) {
                     Button(
                         onClick = onRetryAllFailed,
                         modifier = Modifier
@@ -240,7 +244,11 @@ fun LogsScreen(
                         )
                     }
                 }
-                if (visibleLogs.isNotEmpty()) {
+                AnimatedVisibility(
+                    visible = visibleLogs.isNotEmpty(),
+                    enter = fadeIn(tween(200)) + scaleIn(initialScale = 0.88f, animationSpec = AsisMotion.bouncySpring()),
+                    exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.88f)
+                ) {
                     OutlinedButton(
                         onClick = { showClearConfirm = true },
                         modifier = Modifier
@@ -267,7 +275,11 @@ fun LogsScreen(
             }
         }
 
-        if (visibleLogs.isNotEmpty()) {
+        AnimatedVisibility(
+            visible = visibleLogs.isNotEmpty(),
+            enter = fadeIn(tween(220)) + expandVertically(animationSpec = AsisMotion.smoothSpring()),
+            exit = fadeOut(tween(150)) + shrinkVertically(animationSpec = AsisMotion.smoothSpring())
+        ) {
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
@@ -314,75 +326,93 @@ fun LogsScreen(
             }
         }
 
-        if (filteredLogs.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.padding(24.dp)
+        AnimatedContent(
+            targetState = filteredLogs.isEmpty(),
+            transitionSpec = {
+                (fadeIn(tween(220)) +
+                    slideInVertically(AsisMotion.offsetSpring()) { it / 10 } +
+                    scaleIn(initialScale = 0.97f, animationSpec = AsisMotion.bouncySpring()))
+                    .togetherWith(
+                        fadeOut(tween(150)) + scaleOut(targetScale = 0.97f, animationSpec = tween(150))
+                    )
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            label = "logsListOrEmptyState"
+        ) { isEmptyState ->
+            if (isEmptyState) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(72.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                        contentAlignment = Alignment.Center
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.padding(24.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Inbox,
-                            contentDescription = "لاگی وجود ندارد",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            modifier = Modifier.size(36.dp)
+                        Box(
+                            modifier = Modifier
+                                .size(72.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Inbox,
+                                contentDescription = "لاگی وجود ندارد",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                modifier = Modifier.size(36.dp)
+                            )
+                        }
+                        Text(
+                            text = if (searchQuery.isNotBlank()) {
+                                "نتیجه‌ای برای «$searchQuery» پیدا نشد"
+                            } else {
+                                "هیچ رکوردی در این بخش وجود ندارد"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "پیامک‌های بانکی دریافتی پس از پارس شدن با وضعیت‌های NEW، MATCHED، MANUAL، AMBIGUOUS یا IGNORED اینجا نمایش داده می‌شوند.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Text(
-                        text = if (searchQuery.isNotBlank()) {
-                            "نتیجه‌ای برای «$searchQuery» پیدا نشد"
-                        } else {
-                            "هیچ رکوردی در این بخش وجود ندارد"
-                        },
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "پیامک‌های بانکی دریافتی پس از پارس شدن با وضعیت‌های NEW، MATCHED، MANUAL، AMBIGUOUS یا IGNORED اینجا نمایش داده می‌شوند.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .weight(1f)
-                    .testTag("logs_lazy_column"),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = PaddingValues(bottom = 24.dp)
-            ) {
-                items(
-                    items = filteredLogs,
-                    key = { it.id }
-                ) { entry ->
-                    SmsRecordCard(
-                        entry = entry,
-                        onDirectApprove = {
-                            if (!entry.matchedId.isNullOrBlank()) {
-                                onApproveManually(entry, entry.matchedId, entry.matchedKind)
-                            } else {
-                                manualDialogRecord = entry
-                            }
-                        },
-                        onOpenManualDialog = { manualDialogRecord = entry },
-                        onRetry = { onRetrySingle(entry) },
-                        onMarkAsPersonal = { onMarkAsPersonal(entry) }
-                    )
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("logs_lazy_column"),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp)
+                ) {
+                    items(
+                        items = filteredLogs,
+                        key = { it.id }
+                    ) { entry ->
+                        SmsRecordCard(
+                            entry = entry,
+                            onDirectApprove = {
+                                if (!entry.matchedId.isNullOrBlank()) {
+                                    onApproveManually(entry, entry.matchedId, entry.matchedKind)
+                                } else {
+                                    manualDialogRecord = entry
+                                }
+                            },
+                            onOpenManualDialog = { manualDialogRecord = entry },
+                            onRetry = { onRetrySingle(entry) },
+                            onMarkAsPersonal = { onMarkAsPersonal(entry) },
+                            modifier = Modifier.animateItem(
+                                fadeInSpec = tween(220),
+                                placementSpec = AsisMotion.offsetSpring(),
+                                fadeOutSpec = tween(160)
+                            )
+                        )
+                    }
                 }
             }
         }
@@ -400,81 +430,47 @@ fun LogsScreen(
     }
 
     if (showClearConfirm) {
-        var clearVisible by remember { mutableStateOf(false) }
-        var clearClosingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
-
-        LaunchedEffect(Unit) {
-            clearVisible = true
-        }
-        LaunchedEffect(clearClosingAction) {
-            val action = clearClosingAction ?: return@LaunchedEffect
-            clearVisible = false
-            kotlinx.coroutines.delay(150)
-            action()
-        }
-
-        Dialog(
-            onDismissRequest = { clearClosingAction = { showClearConfirm = false } },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
-        ) {
-            AnimatedVisibility(
-                visible = clearVisible,
-                enter = fadeIn(tween(220)) +
-                    scaleIn(
-                        initialScale = 0.92f,
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioLowBouncy,
-                            stiffness = Spring.StiffnessMediumLow
-                        )
-                    ) +
-                    slideInVertically { it / 12 },
-                exit = fadeOut(tween(150)) + scaleOut(targetScale = 0.92f) + slideOutVertically { it / 12 }
+        AsisSpringModal(
+            onDismissRequest = { showClearConfirm = false },
+            widthFraction = 0.90f,
+            cornerRadiusDp = 22
+        ) { triggerClose ->
+            Column(
+                modifier = Modifier.padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Surface(
-                    shape = RoundedCornerShape(22.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                    tonalElevation = 6.dp,
-                    modifier = Modifier.fillMaxWidth(0.90f)
+                Text(
+                    text = "پاک کردن تمام رکوردها؟",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "آیا مطمئن هستید که می‌خواهید کل تاریخچهٔ پیامک‌های ذخیره‌شده را پاک کنید؟",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(22.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    TextButton(onClick = { triggerClose { showClearConfirm = false } }) {
+                        Text("انصراف")
+                    }
+                    Button(
+                        onClick = {
+                            triggerClose {
+                                showClearConfirm = false
+                                onClearAllLogs()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error
+                        ),
+                        modifier = Modifier.testTag("confirm_clear_logs_button"),
+                        shape = RoundedCornerShape(12.dp)
                     ) {
-                        Text(
-                            text = "پاک کردن تمام رکوردها؟",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "آیا مطمئن هستید که می‌خواهید کل تاریخچهٔ پیامک‌های ذخیره‌شده را پاک کنید؟",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
-                        ) {
-                            TextButton(onClick = { clearClosingAction = { showClearConfirm = false } }) {
-                                Text("انصراف")
-                            }
-                            Button(
-                                onClick = {
-                                    clearClosingAction = {
-                                        showClearConfirm = false
-                                        onClearAllLogs()
-                                    }
-                                },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.error
-                                ),
-                                modifier = Modifier.testTag("confirm_clear_logs_button"),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Text("بله، پاک کن")
-                            }
-                        }
+                        Text("بله، پاک کن")
                     }
                 }
             }
@@ -489,7 +485,8 @@ private fun SmsRecordCard(
     onDirectApprove: () -> Unit,
     onOpenManualDialog: () -> Unit,
     onRetry: () -> Unit,
-    onMarkAsPersonal: () -> Unit = {}
+    onMarkAsPersonal: () -> Unit = {},
+    modifier: Modifier = Modifier
 ) {
     val isTestDeposit = entry.reason == "test_deposit_not_sent"
     val (statusLabel, badgeColor, statusIcon) = when (entry.statusEnum) {
@@ -518,9 +515,9 @@ private fun SmsRecordCard(
         !isTestDeposit
 
     Surface(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .animateContentSize()
+            .animateContentSize(animationSpec = AsisMotion.smoothSpring())
             .testTag("log_item_card_${entry.id}"),
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -850,98 +847,64 @@ private fun ManualOrderApproveDialog(
 ) {
     var publicId by rememberSaveable { mutableStateOf(record.matchedId.orEmpty()) }
     var kind by rememberSaveable { mutableStateOf(record.matchedKind ?: "order") }
-    var modalVisible by remember { mutableStateOf(false) }
-    var closingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
-    LaunchedEffect(Unit) {
-        modalVisible = true
-    }
-    LaunchedEffect(closingAction) {
-        val action = closingAction ?: return@LaunchedEffect
-        modalVisible = false
-        kotlinx.coroutines.delay(150)
-        action()
-    }
-
-    Dialog(
-        onDismissRequest = { closingAction = onDismiss },
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        AnimatedVisibility(
-            visible = modalVisible,
-            enter = fadeIn(tween(220)) +
-                scaleIn(
-                    initialScale = 0.92f,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioLowBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    )
-                ) +
-                slideInVertically { it / 12 },
-            exit = fadeOut(tween(150)) + scaleOut(targetScale = 0.92f) + slideOutVertically { it / 12 }
+    AsisSpringModal(
+        onDismissRequest = onDismiss,
+        widthFraction = 0.90f,
+        cornerRadiusDp = 22
+    ) { triggerClose ->
+        Column(
+            modifier = Modifier.padding(22.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Surface(
-                shape = RoundedCornerShape(22.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                tonalElevation = 6.dp,
-                modifier = Modifier
-                    .fillMaxWidth(0.90f)
-                    .animateContentSize()
+            Text(
+                text = "تأیید دستی واریز",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "مبلغ واریز: ${record.amountMinor?.let { SmsParser.formatToman(it) } ?: "0"} تومان",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold
+            )
+            OutlinedTextField(
+                value = publicId,
+                onValueChange = { publicId = it },
+                label = { Text("شناسه سفارش یا شارژ (مثلاً ORD123)") },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = kind == "order",
+                    onClick = { kind = "order" },
+                    label = { Text("سفارش (order)") }
+                )
+                FilterChip(
+                    selected = kind == "topup",
+                    onClick = { kind = "topup" },
+                    label = { Text("شارژ (topup)") }
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
             ) {
-                Column(
-                    modifier = Modifier.padding(22.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                TextButton(onClick = { triggerClose(onDismiss) }) {
+                    Text("انصراف")
+                }
+                Button(
+                    onClick = { triggerClose { onConfirm(publicId.trim(), kind) } },
+                    enabled = publicId.isNotBlank(),
+                    shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text(
-                        text = "تأیید دستی واریز",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = "مبلغ واریز: ${record.amountMinor?.let { SmsParser.formatToman(it) } ?: "0"} تومان",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold
-                    )
-                    OutlinedTextField(
-                        value = publicId,
-                        onValueChange = { publicId = it },
-                        label = { Text("شناسه سفارش یا شارژ (مثلاً ORD123)") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(
-                            selected = kind == "order",
-                            onClick = { kind = "order" },
-                            label = { Text("سفارش (order)") }
-                        )
-                        FilterChip(
-                            selected = kind == "topup",
-                            onClick = { kind = "topup" },
-                            label = { Text("شارژ (topup)") }
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
-                    ) {
-                        TextButton(onClick = { closingAction = onDismiss }) {
-                            Text("انصراف")
-                        }
-                        Button(
-                            onClick = { closingAction = { onConfirm(publicId.trim(), kind) } },
-                            enabled = publicId.isNotBlank(),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("ارسال تأیید امضاشده")
-                        }
-                    }
+                    Text("ارسال تأیید امضاشده")
                 }
             }
         }
     }
 }
+

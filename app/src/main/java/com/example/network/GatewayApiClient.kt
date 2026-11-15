@@ -208,6 +208,7 @@ object GatewayApiClient {
             val phoneBeforeMs = System.currentTimeMillis()
             client().newCall(request).execute().use { response ->
                 val phoneAfterMs = System.currentTimeMillis()
+                val latencyMs = (phoneAfterMs - phoneBeforeMs).coerceAtLeast(1L)
                 val phoneMidpointMs = (phoneBeforeMs + phoneAfterMs) / 2L
                 val code = response.code
                 val rawBody = response.body?.string().orEmpty()
@@ -218,6 +219,7 @@ object GatewayApiClient {
 
                 when {
                     code in 200..299 && json != null -> {
+                        ServerHealthTracker.recordSuccess(httpCode = code, latencyMs = latencyMs)
                         val serverNowMs = json.optLong("server_now_ms", phoneMidpointMs)
                         val offsetMs = serverNowMs - phoneMidpointMs
                         val matchWindowHours = json.optInt("match_window_hours", 24).coerceAtLeast(1)
@@ -251,32 +253,38 @@ object GatewayApiClient {
                             items = parsedItems
                         )
                     }
-                    code == 401 -> PendingFetchResult.Unauthorized401(
-                        errMsg ?: "توکن نامعتبر است (خطای ۴۰۱)."
-                    )
-                    code == 404 || code == 405 -> PendingFetchResult.NotFound404FallbackToSmsIn(
-                        errMsg ?: "سرور روی نسخهٔ کلاسیک /sms-in است؛ ارسال مستقیم به /sms-in انجام می‌شود."
-                    )
-                    code == 429 -> PendingFetchResult.RetryableError(
-                        429,
-                        errMsg ?: "محدودیت نرخ سرور (۴۲۹)؛ چند دقیقه بعد دوباره تلاش می‌شود."
-                    )
-                    else -> PendingFetchResult.RetryableError(
-                        code,
-                        errMsg ?: "خطای موقت در دریافت لیست سفارش‌های منتظر (کد $code)."
-                    )
+                    code == 401 -> {
+                        val msg = errMsg ?: "توکن نامعتبر است (خطای ۴۰۱)."
+                        ServerHealthTracker.recordFailure(httpCode = 401, errorMessage = msg, latencyMs = latencyMs)
+                        PendingFetchResult.Unauthorized401(msg)
+                    }
+                    code == 404 || code == 405 -> {
+                        // Server is reachable (classic /sms-in mode)
+                        ServerHealthTracker.recordSuccess(httpCode = code, latencyMs = latencyMs)
+                        PendingFetchResult.NotFound404FallbackToSmsIn(
+                            errMsg ?: "سرور روی نسخهٔ کلاسیک /sms-in است؛ ارسال مستقیم به /sms-in انجام می‌شود."
+                        )
+                    }
+                    code == 429 -> {
+                        val msg = errMsg ?: "محدودیت نرخ سرور (۴۲۹)؛ چند دقیقه بعد دوباره تلاش می‌شود."
+                        ServerHealthTracker.recordFailure(httpCode = 429, errorMessage = msg, latencyMs = latencyMs)
+                        PendingFetchResult.RetryableError(429, msg)
+                    }
+                    else -> {
+                        val msg = errMsg ?: "خطای موقت در دریافت لیست سفارش‌های منتظر (کد $code)."
+                        ServerHealthTracker.recordFailure(httpCode = code, errorMessage = msg, latencyMs = latencyMs)
+                        PendingFetchResult.RetryableError(code, msg)
+                    }
                 }
             }
         } catch (e: IOException) {
-            PendingFetchResult.RetryableError(
-                null,
-                describeNetworkException(e)
-            )
+            val msg = describeNetworkException(e)
+            ServerHealthTracker.recordFailure(httpCode = null, errorMessage = msg)
+            PendingFetchResult.RetryableError(null, msg)
         } catch (e: Exception) {
-            PendingFetchResult.RetryableError(
-                null,
-                "خطای ارتباط با سرور: ${e.localizedMessage ?: "نامشخص"}"
-            )
+            val msg = "خطای ارتباط با سرور: ${e.localizedMessage ?: "نامشخص"}"
+            ServerHealthTracker.recordFailure(httpCode = null, errorMessage = msg)
+            PendingFetchResult.RetryableError(null, msg)
         }
     }
 
@@ -459,7 +467,9 @@ object GatewayApiClient {
         }
 
         try {
+            val startedMs = System.currentTimeMillis()
             client().newCall(request).execute().use { response ->
+                val latencyMs = (System.currentTimeMillis() - startedMs).coerceAtLeast(1L)
                 val code = response.code
                 val rawBody = response.body?.string().orEmpty()
                 val json = runCatching { JSONObject(rawBody) }.getOrNull()
@@ -469,45 +479,49 @@ object GatewayApiClient {
 
                 when {
                     code in 200..299 -> {
+                        ServerHealthTracker.recordSuccess(httpCode = code, latencyMs = latencyMs)
                         val status = json?.optString("status", "new") ?: "new"
                         val approved = json?.optInt("approved", 0) ?: 0
                         GatewayResult.Success(code, status, approved)
                     }
-                    code == 401 -> GatewayResult.PermanentFailure(
-                        httpCode = 401,
-                        isTokenError = true,
-                        message = serverErrorMsg ?: "توکن نامعتبر است (خطای ۴۰۱). لطفاً توکن را در تنظیمات بررسی کنید."
-                    )
-                    code == 404 -> GatewayResult.PermanentFailure(
-                        httpCode = 404,
-                        isTokenError = false,
-                        message = serverErrorMsg ?: "درگاه پیامک سمت سرور خاموش است یا مسیر اشتباه است (خطای ۴۰۴)."
-                    )
-                    code == 400 -> GatewayResult.PermanentFailure(
-                        httpCode = 400,
-                        isTokenError = false,
-                        message = serverErrorMsg ?: "متن پیامک نامعتبر است (خطای ۴۰۰)."
-                    )
-                    code == 429 -> GatewayResult.RetryableFailure(
-                        httpCode = 429,
-                        message = serverErrorMsg ?: "محدودیت نرخ سرور (خطای ۴۲۹)؛ چند دقیقه بعد دوباره تلاش می‌شود."
-                    )
-                    else -> GatewayResult.RetryableFailure(
-                        httpCode = code,
-                        message = serverErrorMsg ?: "خطای موقت سرور (کد $code) — در صف تلاش مجدد قرار گرفت."
-                    )
+                    code == 401 -> {
+                        val msg = serverErrorMsg ?: "توکن نامعتبر است (خطای ۴۰۱). لطفاً توکن را در تنظیمات بررسی کنید."
+                        ServerHealthTracker.recordFailure(httpCode = 401, errorMessage = msg, latencyMs = latencyMs)
+                        GatewayResult.PermanentFailure(httpCode = 401, isTokenError = true, message = msg)
+                    }
+                    code == 404 -> {
+                        val msg = serverErrorMsg ?: "درگاه پیامک سمت سرور خاموش است یا مسیر اشتباه است (خطای ۴۰۴)."
+                        ServerHealthTracker.recordFailure(httpCode = 404, errorMessage = msg, latencyMs = latencyMs)
+                        GatewayResult.PermanentFailure(httpCode = 404, isTokenError = false, message = msg)
+                    }
+                    code == 400 -> {
+                        ServerHealthTracker.recordSuccess(httpCode = 400, latencyMs = latencyMs)
+                        GatewayResult.PermanentFailure(
+                            httpCode = 400,
+                            isTokenError = false,
+                            message = serverErrorMsg ?: "متن پیامک نامعتبر است (خطای ۴۰۰)."
+                        )
+                    }
+                    code == 429 -> {
+                        val msg = serverErrorMsg ?: "محدودیت نرخ سرور (خطای ۴۲۹)؛ چند دقیقه بعد دوباره تلاش می‌شود."
+                        ServerHealthTracker.recordFailure(httpCode = 429, errorMessage = msg, latencyMs = latencyMs)
+                        GatewayResult.RetryableFailure(httpCode = 429, message = msg)
+                    }
+                    else -> {
+                        val msg = serverErrorMsg ?: "خطای موقت سرور (کد $code) — در صف تلاش مجدد قرار گرفت."
+                        ServerHealthTracker.recordFailure(httpCode = code, errorMessage = msg, latencyMs = latencyMs)
+                        GatewayResult.RetryableFailure(httpCode = code, message = msg)
+                    }
                 }
             }
         } catch (e: IOException) {
-            GatewayResult.RetryableFailure(
-                httpCode = null,
-                message = describeNetworkException(e)
-            )
+            val msg = describeNetworkException(e)
+            ServerHealthTracker.recordFailure(httpCode = null, errorMessage = msg)
+            GatewayResult.RetryableFailure(httpCode = null, message = msg)
         } catch (e: Exception) {
-            GatewayResult.RetryableFailure(
-                httpCode = null,
-                message = "خطای ارتباط با سرور: ${e.localizedMessage ?: "نامشخص"}"
-            )
+            val msg = "خطای ارتباط با سرور: ${e.localizedMessage ?: "نامشخص"}"
+            ServerHealthTracker.recordFailure(httpCode = null, errorMessage = msg)
+            GatewayResult.RetryableFailure(httpCode = null, message = msg)
         }
     }
 
@@ -521,5 +535,26 @@ object GatewayApiClient {
             smsText = SmsParser.TEST_MARK,
             bankCode = ""
         )
+    }
+
+    /**
+     * Lightweight real-time server probe used by the Home top status widget.
+     * Probes `GET /sms-pending`, updates `ServerHealthTracker`, and falls back to `/sms-in` test
+     * if the server returns 404/405.
+     */
+    suspend fun pingServer(endpointUrl: String, token: String): Boolean {
+        val validationError = validateInputConfig(endpointUrl, token)
+        if (validationError != null) {
+            ServerHealthTracker.recordFailure(httpCode = null, errorMessage = validationError)
+            return false
+        }
+        ServerHealthTracker.setChecking(true)
+        return when (val pendingRes = fetchPendingItems(endpointUrl, token)) {
+            is PendingFetchResult.Success -> true
+            is PendingFetchResult.NotFound404FallbackToSmsIn -> {
+                testConnection(endpointUrl, token) is GatewayResult.Success
+            }
+            else -> false
+        }
     }
 }
