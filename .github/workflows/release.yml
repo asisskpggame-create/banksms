@@ -81,9 +81,13 @@ jobs:
           rtext = rtext.replace("alias(libs.plugins.google.services) apply false", "// alias(libs.plugins.google.services) apply false")
           root_bg.write_text(rtext, encoding="utf-8")
 
-          # 3. Update app/build.gradle.kts for AGP 8.7.3 & compileSdk 35
+          # 3. Update app/build.gradle.kts for AGP 8.7.3 & compileSdk 35 & monotonic versionCode
+          import os
+          run_num = int(os.environ.get("GITHUB_RUN_NUMBER", "1"))
+          monotonic_version_code = 100 + run_num
           app_bg = Path("app/build.gradle.kts")
           atext = app_bg.read_text(encoding="utf-8")
+          atext = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {monotonic_version_code}", atext)
           atext = atext.replace(
               "import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy",
               "// import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy"
@@ -112,7 +116,7 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Prepare Signing Keystore (Secrets or Auto-Generated Fallback)
+      - name: Prepare Signing Keystore (Persistent Release Keystore for Seamless In-Place Updates)
         env:
           KEYSTORE_BASE64_SECRET: ${{ secrets.KEYSTORE_BASE64 }}
           STORE_PASS_SECRET: ${{ secrets.STORE_PASSWORD }}
@@ -128,15 +132,21 @@ jobs:
           fi
 
           REL_KS="${{ runner.temp }}/release-upload-key.jks"
+          FALLBACK_PASS="asis_release_2026"
           if [ -n "$KEYSTORE_BASE64_SECRET" ] && [ -n "$STORE_PASS_SECRET" ] && [ -n "$KEY_PASS_SECRET" ]; then
             echo "Using repository release signing secrets."
             echo "$KEYSTORE_BASE64_SECRET" | base64 -d > "$REL_KS"
             echo "KEYSTORE_PATH=$REL_KS" >> "$GITHUB_ENV"
             echo "STORE_PASSWORD=$STORE_PASS_SECRET" >> "$GITHUB_ENV"
             echo "KEY_PASSWORD=$KEY_PASS_SECRET" >> "$GITHUB_ENV"
+          elif [ -f .github/release-key.jks.base64 ]; then
+            echo "Using persistent repository release keystore (.github/release-key.jks.base64) so updates install in-place without uninstalling."
+            base64 -d .github/release-key.jks.base64 > "$REL_KS"
+            echo "KEYSTORE_PATH=$REL_KS" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=$FALLBACK_PASS" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=$FALLBACK_PASS" >> "$GITHUB_ENV"
           else
-            echo "No release keystore secrets found; generating ephemeral release keystore so APK release succeeds."
-            FALLBACK_PASS="asis_release_2026"
+            echo "Fallback: generating release keystore."
             keytool -genkeypair -v -keystore "$REL_KS" \
               -storepass "$FALLBACK_PASS" -alias upload -keypass "$FALLBACK_PASS" \
               -keyalg RSA -keysize 2048 -validity 10000 \

@@ -50,6 +50,14 @@ class ExampleRobolectricTest {
         assertTrue(updatedCards.any { it.senderNumber == "98300017" && it.bankCode == "mellat" })
         assertEquals("mellat", com.example.data.SmsParser.detectBank("98300017", "").code)
 
+        // Verify loadReceivedSmsSenders returns bank shortcodes prioritized first
+        val receivedSenders = vm.loadReceivedSmsSenders()
+        assertTrue(receivedSenders.isNotEmpty())
+        assertTrue(receivedSenders.contains("B.QMEHRIRAN"))
+        assertTrue(receivedSenders.contains("+98200033"))
+        val firstDetected = com.example.data.SmsParser.detectBank(receivedSenders.first(), "")
+        assertNotNull(com.example.ui.BankVisualCatalog.findByCode(firstDetected.code))
+
         // Verify WorkManager OneTimeWorkRequest builders do not throw IllegalArgumentException
         ForwardWorker.enqueueMatcherSweep(context)
         ForwardWorker.enqueueManualApprove(context, recordId = 1L)

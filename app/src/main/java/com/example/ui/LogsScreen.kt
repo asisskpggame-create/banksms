@@ -1,5 +1,16 @@
 package com.example.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -35,7 +46,6 @@ import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.WarningAmber
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
@@ -49,6 +59,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -64,6 +75,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.data.SmsParser
 import com.example.data.SmsRecord
 import com.example.data.SmsStatus
@@ -387,34 +400,85 @@ fun LogsScreen(
     }
 
     if (showClearConfirm) {
-        AlertDialog(
-            onDismissRequest = { showClearConfirm = false },
-            shape = RoundedCornerShape(22.dp),
-            title = { Text("پاک کردن تمام رکوردها؟", fontWeight = FontWeight.Bold) },
-            text = {
-                Text("آیا مطمئن هستید که می‌خواهید کل تاریخچهٔ پیامک‌های ذخیره‌شده را پاک کنید؟")
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showClearConfirm = false
-                        onClearAllLogs()
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error
-                    ),
-                    modifier = Modifier.testTag("confirm_clear_logs_button"),
-                    shape = RoundedCornerShape(12.dp)
+        var clearVisible by remember { mutableStateOf(false) }
+        var clearClosingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+        LaunchedEffect(Unit) {
+            clearVisible = true
+        }
+        LaunchedEffect(clearClosingAction) {
+            val action = clearClosingAction ?: return@LaunchedEffect
+            clearVisible = false
+            kotlinx.coroutines.delay(150)
+            action()
+        }
+
+        Dialog(
+            onDismissRequest = { clearClosingAction = { showClearConfirm = false } },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            AnimatedVisibility(
+                visible = clearVisible,
+                enter = fadeIn(tween(220)) +
+                    scaleIn(
+                        initialScale = 0.92f,
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioLowBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    ) +
+                    slideInVertically { it / 12 },
+                exit = fadeOut(tween(150)) + scaleOut(targetScale = 0.92f) + slideOutVertically { it / 12 }
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(22.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    tonalElevation = 6.dp,
+                    modifier = Modifier.fillMaxWidth(0.90f)
                 ) {
-                    Text("بله، پاک کن")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showClearConfirm = false }) {
-                    Text("انصراف")
+                    Column(
+                        modifier = Modifier.padding(22.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Text(
+                            text = "پاک کردن تمام رکوردها؟",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "آیا مطمئن هستید که می‌خواهید کل تاریخچهٔ پیامک‌های ذخیره‌شده را پاک کنید؟",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+                        ) {
+                            TextButton(onClick = { clearClosingAction = { showClearConfirm = false } }) {
+                                Text("انصراف")
+                            }
+                            Button(
+                                onClick = {
+                                    clearClosingAction = {
+                                        showClearConfirm = false
+                                        onClearAllLogs()
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error
+                                ),
+                                modifier = Modifier.testTag("confirm_clear_logs_button"),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text("بله، پاک کن")
+                            }
+                        }
+                    }
                 }
             }
-        )
+        }
     }
 }
 
@@ -456,6 +520,7 @@ private fun SmsRecordCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .animateContentSize()
             .testTag("log_item_card_${entry.id}"),
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -785,54 +850,98 @@ private fun ManualOrderApproveDialog(
 ) {
     var publicId by rememberSaveable { mutableStateOf(record.matchedId.orEmpty()) }
     var kind by rememberSaveable { mutableStateOf(record.matchedKind ?: "order") }
+    var modalVisible by remember { mutableStateOf(false) }
+    var closingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(22.dp),
-        title = { Text("تأیید دستی واریز", fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "مبلغ واریز: ${record.amountMinor?.let { SmsParser.formatToman(it) } ?: "0"} تومان",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Bold
-                )
-                OutlinedTextField(
-                    value = publicId,
-                    onValueChange = { publicId = it },
-                    label = { Text("شناسه سفارش یا شارژ (مثلاً ORD123)") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = kind == "order",
-                        onClick = { kind = "order" },
-                        label = { Text("سفارش (order)") }
+    LaunchedEffect(Unit) {
+        modalVisible = true
+    }
+    LaunchedEffect(closingAction) {
+        val action = closingAction ?: return@LaunchedEffect
+        modalVisible = false
+        kotlinx.coroutines.delay(150)
+        action()
+    }
+
+    Dialog(
+        onDismissRequest = { closingAction = onDismiss },
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        AnimatedVisibility(
+            visible = modalVisible,
+            enter = fadeIn(tween(220)) +
+                scaleIn(
+                    initialScale = 0.92f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioLowBouncy,
+                        stiffness = Spring.StiffnessMediumLow
                     )
-                    FilterChip(
-                        selected = kind == "topup",
-                        onClick = { kind = "topup" },
-                        label = { Text("شارژ (topup)") }
+                ) +
+                slideInVertically { it / 12 },
+            exit = fadeOut(tween(150)) + scaleOut(targetScale = 0.92f) + slideOutVertically { it / 12 }
+        ) {
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                tonalElevation = 6.dp,
+                modifier = Modifier
+                    .fillMaxWidth(0.90f)
+                    .animateContentSize()
+            ) {
+                Column(
+                    modifier = Modifier.padding(22.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "تأیید دستی واریز",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
+                    Text(
+                        text = "مبلغ واریز: ${record.amountMinor?.let { SmsParser.formatToman(it) } ?: "0"} تومان",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    OutlinedTextField(
+                        value = publicId,
+                        onValueChange = { publicId = it },
+                        label = { Text("شناسه سفارش یا شارژ (مثلاً ORD123)") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = kind == "order",
+                            onClick = { kind = "order" },
+                            label = { Text("سفارش (order)") }
+                        )
+                        FilterChip(
+                            selected = kind == "topup",
+                            onClick = { kind = "topup" },
+                            label = { Text("شارژ (topup)") }
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+                    ) {
+                        TextButton(onClick = { closingAction = onDismiss }) {
+                            Text("انصراف")
+                        }
+                        Button(
+                            onClick = { closingAction = { onConfirm(publicId.trim(), kind) } },
+                            enabled = publicId.isNotBlank(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("ارسال تأیید امضاشده")
+                        }
+                    }
                 }
             }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onConfirm(publicId.trim(), kind) },
-                enabled = publicId.isNotBlank(),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text("ارسال تأیید امضاشده")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("انصراف")
-            }
         }
-    )
+    }
 }

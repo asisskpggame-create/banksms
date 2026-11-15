@@ -1,9 +1,21 @@
 package com.example.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -27,16 +39,21 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Science
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -48,7 +65,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -104,9 +123,22 @@ fun BanksScreen(
             .fillMaxSize()
             .background(MirzaDarkBg)
     ) {
-        Crossfade(
+        AnimatedContent(
             targetState = isAddingNewBank,
-            animationSpec = tween(durationMillis = 220),
+            transitionSpec = {
+                (fadeIn(animationSpec = tween(230)) +
+                    slideInVertically(
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    ) { fullHeight -> if (targetState) fullHeight / 16 else -fullHeight / 16 } +
+                    scaleIn(initialScale = 0.97f, animationSpec = tween(230)))
+                    .togetherWith(
+                        fadeOut(animationSpec = tween(170)) +
+                            scaleOut(targetScale = 0.97f, animationSpec = tween(170))
+                    )
+            },
             label = "banksSubScreenTransition"
         ) { addingMode ->
             if (addingMode) {
@@ -144,6 +176,7 @@ private fun RegisteredBanksMainScreen(
         mutableStateOf("بانک ملت\nواریز به حساب شما\nمبلغ: 50,000,000ریال\nمانده: 90,000,000ریال")
     }
     var validationBanner by rememberSaveable { mutableStateOf<String?>(null) }
+    var removingCardIds by remember { mutableStateOf(setOf<String>()) }
 
     Column(
         modifier = Modifier
@@ -152,20 +185,45 @@ private fun RegisteredBanksMainScreen(
             .padding(horizontal = 18.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
-        // Top Header: Title "بانک‌های تعریف شده" on the right (start in RTL) and "+ افزودن بانک" pill button on the left (end in RTL)
+        // Top Header: Title "بانک‌های تعریف شده" + active counter pill on the right, and "+ افزودن بانک" pill button on the left
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "بانک‌های تعریف شده",
-                style = MaterialTheme.typography.titleLarge.copy(
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 21.sp
-                ),
-                color = Color.White
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "بانک‌های تعریف شده",
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 21.sp
+                    ),
+                    color = Color.White
+                )
+                AnimatedVisibility(
+                    visible = settings.registeredBankCards.isNotEmpty(),
+                    enter = fadeIn(tween(220)) + scaleIn(initialScale = 0.85f),
+                    exit = fadeOut(tween(160)) + scaleOut(targetScale = 0.85f)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = MirzaGreen.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, MirzaGreen.copy(alpha = 0.35f))
+                    ) {
+                        Text(
+                            text = "${settings.registeredBankCards.size} فعال",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.ExtraBold
+                            ),
+                            color = MirzaGreen,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+            }
 
             Surface(
                 shape = RoundedCornerShape(14.dp),
@@ -199,7 +257,15 @@ private fun RegisteredBanksMainScreen(
             }
         }
 
-        if (settings.registeredBankCards.isEmpty()) {
+        AnimatedVisibility(
+            visible = settings.registeredBankCards.isEmpty(),
+            enter = fadeIn(tween(260)) +
+                expandVertically(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)) +
+                scaleIn(initialScale = 0.95f),
+            exit = fadeOut(tween(180)) +
+                shrinkVertically(animationSpec = tween(200)) +
+                scaleOut(targetScale = 0.95f)
+        ) {
             Surface(
                 shape = RoundedCornerShape(20.dp),
                 color = MirzaCardBg,
@@ -233,17 +299,73 @@ private fun RegisteredBanksMainScreen(
                     )
                 }
             }
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        }
+
+        AnimatedVisibility(
+            visible = settings.registeredBankCards.isNotEmpty(),
+            enter = fadeIn(tween(240)) + expandVertically(),
+            exit = fadeOut(tween(180)) + shrinkVertically()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .animateContentSize(
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    ),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
                 for (card in settings.registeredBankCards) {
-                    val spec = BankVisualCatalog.findByCode(card.bankCode)
-                    RealisticBankCard(
-                        spec = spec,
-                        bankTitleOverride = card.bankTitle,
-                        senderNumber = card.senderNumber,
-                        onDeleteClick = { onDeleteBankCard(card.id) },
-                        modifier = Modifier.testTag("registered_bank_card_${card.id}")
-                    )
+                    key(card.id) {
+                        var isCardEntered by remember { mutableStateOf(false) }
+                        val isCardRemoving = removingCardIds.contains(card.id)
+
+                        LaunchedEffect(card.id) {
+                            isCardEntered = true
+                        }
+
+                        LaunchedEffect(isCardRemoving) {
+                            if (isCardRemoving) {
+                                kotlinx.coroutines.delay(190)
+                                onDeleteBankCard(card.id)
+                                removingCardIds = removingCardIds - card.id
+                            }
+                        }
+
+                        AnimatedVisibility(
+                            visible = isCardEntered && !isCardRemoving,
+                            enter = fadeIn(tween(250)) +
+                                expandVertically(
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioLowBouncy,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                ) +
+                                slideInVertically(
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioLowBouncy,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                ) { it / 6 } +
+                                scaleIn(initialScale = 0.94f, animationSpec = tween(240)),
+                            exit = fadeOut(tween(180)) +
+                                shrinkVertically(animationSpec = tween(190)) +
+                                scaleOut(targetScale = 0.92f, animationSpec = tween(180))
+                        ) {
+                            val spec = BankVisualCatalog.findByCode(card.bankCode)
+                            RealisticBankCard(
+                                spec = spec,
+                                bankTitleOverride = card.bankTitle,
+                                senderNumber = card.senderNumber,
+                                onDeleteClick = {
+                                    removingCardIds = removingCardIds + card.id
+                                },
+                                modifier = Modifier.testTag("registered_bank_card_${card.id}")
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -634,13 +756,59 @@ private fun AddNewBankScreen(
                 }
             }
 
+            AnimatedVisibility(
+                visible = selectedSpec != null && senderNumber.trim() != selectedSpec.defaultSender,
+                enter = fadeIn(tween(220)) + expandVertically(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)),
+                exit = fadeOut(tween(160)) + shrinkVertically(animationSpec = tween(160))
+            ) {
+                val specForChip = selectedSpec
+                if (specForChip != null) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MirzaGreen.copy(alpha = 0.12f),
+                        border = BorderStroke(1.dp, MirzaGreen.copy(alpha = 0.35f)),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
+                                senderNumber = specForChip.defaultSender
+                                validationError = null
+                            }
+                            .testTag("use_default_sender_chip")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = MirzaGreen,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "درج سرشماره پیش‌فرض ${specForChip.gridLabelFa}: ${specForChip.defaultSender}",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                color = MirzaGreen
+                            )
+                        }
+                    }
+                }
+            }
+
             Text(
-                text = "می‌توانید از دکمه لیست، سرشماره‌های دریافت‌شده را انتخاب کنید",
+                text = "می‌توانید از دکمه لیست، بین سرشماره‌های دریافت‌شده جستجو و انتخاب کنید",
                 style = MaterialTheme.typography.bodySmall,
                 color = MirzaMutedText
             )
 
-            if (validationError != null) {
+            AnimatedVisibility(
+                visible = validationError != null,
+                enter = fadeIn(tween(200)) + expandVertically(),
+                exit = fadeOut(tween(150)) + shrinkVertically()
+            ) {
                 Text(
                     text = validationError.orEmpty(),
                     style = MaterialTheme.typography.bodySmall,
@@ -716,7 +884,7 @@ private fun AddNewBankScreen(
     }
 
     if (showReceivedSendersModal) {
-        val sendersList = remember { onLoadReceivedSenders() }
+        val sendersList = remember(showReceivedSendersModal) { onLoadReceivedSenders() }
         val registeredSendersSet = remember(registeredCards) {
             registeredCards.map { it.senderNumber.lowercase() }.toSet()
         }
@@ -739,9 +907,37 @@ private fun AddNewBankScreen(
     }
 }
 
+private enum class SenderFilterMode(val titleFa: String) {
+    ALL("همه"),
+    BANKS_ONLY("سرشماره بانکی"),
+    NON_PERSONAL("خدماتی / غیرشخصی")
+}
+
+private data class EnrichedSenderItem(
+    val sender: String,
+    val bankSpec: BankVisualSpec?,
+    val detectedBankTitleFa: String?,
+    val isPersonal: Boolean,
+    val isAlreadyRegistered: Boolean
+)
+
+private fun normalizeSearchText(input: String): String {
+    val sb = StringBuilder(input.length)
+    for (ch in input) {
+        when (ch) {
+            in '۰'..'۹' -> sb.append(('0'.code + (ch.code - '۰'.code)).toChar())
+            in '٠'..'٩' -> sb.append(('0'.code + (ch.code - '٠'.code)).toChar())
+            'ي' -> sb.append('ی')
+            'ك' -> sb.append('ک')
+            else -> sb.append(ch)
+        }
+    }
+    return sb.toString()
+}
+
 /**
- * Dark modal matching Screenshot 1 ("سرشماره‌های دریافت‌شده") with "(قبلاً ثبت شده)" badge
- * for already-registered senders and a blue "بستن" button at the bottom left.
+ * Pro Max Dark Modal ("سرشماره‌های دریافت‌شده") with live search bar, category filters,
+ * automatic Iranian bank recognition badges, and "(قبلاً ثبت شده)" status indicators.
  */
 @Composable
 private fun ReceivedSendersDialog(
@@ -750,104 +946,557 @@ private fun ReceivedSendersDialog(
     onSelectSender: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var filterMode by rememberSaveable { mutableStateOf(SenderFilterMode.ALL) }
+
+    val enrichedSenders = remember(senders, registeredSendersLower) {
+        senders.map { sender ->
+            val detected = SmsParser.detectBank(sender, "")
+            val visualSpec = BankVisualCatalog.findByCode(detected.code)
+            val bankTitle = visualSpec?.cardTitleFa
+                ?: detected.titleFa.takeIf { detected.code != "unknown" && detected.code != "other" }
+            EnrichedSenderItem(
+                sender = sender,
+                bankSpec = visualSpec,
+                detectedBankTitleFa = bankTitle,
+                isPersonal = SmsParser.isPersonalSender(sender),
+                isAlreadyRegistered = registeredSendersLower.contains(sender.lowercase())
+            )
+        }
+    }
+
+    val bankSendersCount = remember(enrichedSenders) {
+        enrichedSenders.count { it.bankSpec != null || it.detectedBankTitleFa != null }
+    }
+    val nonPersonalCount = remember(enrichedSenders) {
+        enrichedSenders.count { !it.isPersonal }
+    }
+
+    val filteredSenders = remember(enrichedSenders, searchQuery, filterMode) {
+        val rawQ = searchQuery.trim()
+        val normalizedQ = normalizeSearchText(rawQ).lowercase()
+        enrichedSenders.filter { item ->
+            val modeMatches = when (filterMode) {
+                SenderFilterMode.ALL -> true
+                SenderFilterMode.BANKS_ONLY -> item.bankSpec != null || item.detectedBankTitleFa != null
+                SenderFilterMode.NON_PERSONAL -> !item.isPersonal
+            }
+            if (!modeMatches) return@filter false
+            if (normalizedQ.isEmpty()) return@filter true
+
+            val senderNorm = normalizeSearchText(item.sender).lowercase()
+            val bankTitleNorm = normalizeSearchText(item.detectedBankTitleFa.orEmpty()).lowercase()
+            val gridLabelNorm = normalizeSearchText(item.bankSpec?.gridLabelFa.orEmpty()).lowercase()
+            val bankCodeNorm = item.bankSpec?.code?.lowercase().orEmpty()
+
+            senderNorm.contains(normalizedQ) ||
+                bankTitleNorm.contains(normalizedQ) ||
+                gridLabelNorm.contains(normalizedQ) ||
+                bankCodeNorm.contains(normalizedQ)
+        }
+    }
+
+    var modalVisible by remember { mutableStateOf(false) }
+    var isClosing by remember { mutableStateOf(false) }
+    var pendingSelectedSender by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        modalVisible = true
+    }
+
+    LaunchedEffect(isClosing) {
+        if (isClosing) {
+            modalVisible = false
+            kotlinx.coroutines.delay(150)
+            val chosen = pendingSelectedSender
+            if (chosen != null) {
+                onSelectSender(chosen)
+            } else {
+                onDismiss()
+            }
+        }
+    }
+
+    val triggerDismiss = {
+        pendingSelectedSender = null
+        isClosing = true
+    }
+    val triggerSelect: (String) -> Unit = { chosen ->
+        pendingSelectedSender = chosen
+        isClosing = true
+    }
+
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = triggerDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = Color(0xFF3E4249),
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
-            modifier = Modifier
-                .fillMaxWidth(0.90f)
-                .heightIn(max = 640.dp)
-                .testTag("received_senders_modal")
+        AnimatedVisibility(
+            visible = modalVisible,
+            enter = fadeIn(tween(220)) +
+                scaleIn(
+                    initialScale = 0.92f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioLowBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                ) +
+                slideInVertically(
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                ) { it / 12 },
+            exit = fadeOut(tween(160)) +
+                scaleOut(targetScale = 0.92f, animationSpec = tween(160)) +
+                slideOutVertically(animationSpec = tween(160)) { it / 12 }
         ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = "سرشماره‌های دریافت‌شده",
-                    style = MaterialTheme.typography.titleLarge.copy(
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp
-                    ),
-                    color = Color.White,
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = Color(0xFF161B26),
+                border = BorderStroke(1.dp, Color(0xFF2B3548)),
+                shadowElevation = 18.dp,
+                modifier = Modifier
+                    .fillMaxWidth(0.93f)
+                    .heightIn(max = 680.dp)
+                    .animateContentSize(
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    )
+                    .testTag("received_senders_modal")
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                // 1. Header with icon, title, and live counter
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 22.dp, vertical = 18.dp)
-                )
+                        .padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MirzaGreen.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, MirzaGreen.copy(alpha = 0.32f)),
+                            modifier = Modifier.size(42.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Inbox,
+                                    contentDescription = null,
+                                    tint = MirzaGreen,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = "سرشماره‌های دریافت‌شده",
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 19.sp
+                                ),
+                                color = Color.White
+                            )
+                            Text(
+                                text = "${filteredSenders.size} سرشماره از ${senders.size} مورد • اولویت با سرشماره‌های بانکی",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MirzaMutedText
+                            )
+                        }
+                    }
+                }
+
+                // 2. Search Bar inside the modal
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp)
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color(0xFF0F141D))
+                        .border(
+                            width = 1.dp,
+                            color = if (searchQuery.isNotEmpty()) MirzaGreen.copy(alpha = 0.65f) else Color(0xFF283246),
+                            shape = RoundedCornerShape(14.dp)
+                        )
+                        .padding(horizontal = 14.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = "جستجو",
+                            tint = if (searchQuery.isNotEmpty()) MirzaGreen else MirzaMutedText,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Box(
+                            modifier = Modifier.weight(1f),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            if (searchQuery.isEmpty()) {
+                                Text(
+                                    text = "جستجوی شماره، سرشماره یا نام بانک (مثلاً ملت، 2000)...",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = MirzaMutedText.copy(alpha = 0.78f),
+                                        fontSize = 13.sp
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            BasicTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                singleLine = true,
+                                cursorBrush = SolidColor(MirzaGreen),
+                                textStyle = TextStyle(
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("received_senders_search_input")
+                            )
+                        }
+                        if (searchQuery.isNotEmpty()) {
+                            Surface(
+                                shape = CircleShape,
+                                color = Color(0xFF252F42),
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                                    .clickable { searchQuery = "" }
+                                    .testTag("received_senders_clear_search_button")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Clear,
+                                        contentDescription = "پاک کردن جستجو",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // 3. Category Filter Pills ("همه", "سرشماره بانکی", "خدماتی / غیرشخصی")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val filterOptions = listOf(
+                        Triple(SenderFilterMode.ALL, "همه (${senders.size})", "received_senders_filter_all"),
+                        Triple(SenderFilterMode.BANKS_ONLY, "بانکی ($bankSendersCount)", "received_senders_filter_banks"),
+                        Triple(SenderFilterMode.NON_PERSONAL, "خدماتی ($nonPersonalCount)", "received_senders_filter_service")
+                    )
+                    for ((mode, label, tag) in filterOptions) {
+                        val selected = filterMode == mode
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (selected) MirzaGreen.copy(alpha = 0.16f) else Color(0xFF1D2433),
+                            border = BorderStroke(
+                                1.dp,
+                                if (selected) MirzaGreen.copy(alpha = 0.55f) else Color(0xFF2B3548)
+                            ),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { filterMode = mode }
+                                .testTag(tag)
+                        ) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Medium,
+                                    fontSize = 12.sp
+                                ),
+                                color = if (selected) MirzaGreen else MirzaMutedText,
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
 
                 HorizontalDivider(
                     thickness = 1.dp,
-                    color = Color.White.copy(alpha = 0.08f)
+                    color = Color(0xFF252E40)
                 )
 
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f, fill = false)
-                ) {
-                    items(senders) { sender ->
-                        val isAlreadyRegistered = registeredSendersLower.contains(sender.lowercase())
+                // 4. Senders List or Empty Search State
+                if (filteredSenders.isEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp, vertical = 32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null,
+                            tint = MirzaMutedText,
+                            modifier = Modifier.size(38.dp)
+                        )
+                        Text(
+                            text = "سرشماره‌ای مطابق با «$searchQuery» یافت نشد",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold
+                            ),
+                            color = Color.White,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = "می‌توانید فیلتر را تغییر دهید یا عبارت جستجو شده را مستقیماً به عنوان سرشماره ثبت کنید.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MirzaMutedText,
+                            textAlign = TextAlign.Center
+                        )
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable(enabled = !isAlreadyRegistered) {
-                                    onSelectSender(sender)
-                                }
-                                .padding(horizontal = 24.dp, vertical = 15.dp)
-                                .testTag("received_sender_option_$sender"),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.End
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (isAlreadyRegistered) {
-                                Text(
-                                    text = "(قبلاً ثبت شده)",
-                                    style = MaterialTheme.typography.bodyLarge.copy(
-                                        fontSize = 15.sp
+                            if (searchQuery.trim().isNotEmpty()) {
+                                Button(
+                                    onClick = { triggerSelect(normalizeSearchText(searchQuery.trim())) },
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MirzaGreen,
+                                        contentColor = Color.White
                                     ),
-                                    color = Color(0xFFFBBF24)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
+                                    modifier = Modifier.testTag("use_searched_sender_directly_button")
+                                ) {
+                                    Text(
+                                        text = "انتخاب «${searchQuery.trim()}»",
+                                        style = MaterialTheme.typography.labelLarge.copy(
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    )
+                                }
                             }
-                            Text(
-                                text = sender,
-                                style = MaterialTheme.typography.bodyLarge.copy(
-                                    fontFamily = FontFamily.SansSerif,
-                                    fontSize = 17.sp,
-                                    fontWeight = if (isAlreadyRegistered) FontWeight.Normal else FontWeight.Medium,
-                                    textDirection = TextDirection.Ltr
+                            TextButton(
+                                onClick = {
+                                    searchQuery = ""
+                                    filterMode = SenderFilterMode.ALL
+                                }
+                            ) {
+                                Text(
+                                    text = "نمایش همه سرشماره‌ها",
+                                    color = Color(0xFF60A5FA),
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(
+                            items = filteredSenders,
+                            key = { it.sender }
+                        ) { item ->
+                            val isAlreadyRegistered = item.isAlreadyRegistered
+                            val isRecognizedBank = item.bankSpec != null || item.detectedBankTitleFa != null
+
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = when {
+                                    isAlreadyRegistered -> Color(0xFF1A202C).copy(alpha = 0.65f)
+                                    isRecognizedBank -> Color(0xFF1E293B)
+                                    else -> Color(0xFF1A2130)
+                                },
+                                border = BorderStroke(
+                                    width = 1.dp,
+                                    color = when {
+                                        isAlreadyRegistered -> Color(0xFFFBBF24).copy(alpha = 0.28f)
+                                        isRecognizedBank -> MirzaGreen.copy(alpha = 0.35f)
+                                        else -> Color(0xFF283246)
+                                    }
                                 ),
-                                color = if (isAlreadyRegistered) Color.White.copy(alpha = 0.55f) else Color.White
-                            )
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .clickable(enabled = !isAlreadyRegistered) {
+                                        triggerSelect(item.sender)
+                                    }
+                                    .testTag("received_sender_option_${item.sender}")
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    // Right side in RTL: Bank Logo or SMS Icon + Bank/Category label
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        if (item.bankSpec != null) {
+                                            BankLogoBadge(
+                                                spec = item.bankSpec,
+                                                size = 40.dp,
+                                                isSelected = false
+                                            )
+                                        } else {
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = if (item.isPersonal) {
+                                                    Color(0xFF2B3346)
+                                                } else {
+                                                    Color(0xFF1E3A5F)
+                                                },
+                                                modifier = Modifier.size(40.dp)
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Sms,
+                                                        contentDescription = null,
+                                                        tint = if (item.isPersonal) MirzaMutedText else Color(0xFF60A5FA),
+                                                        modifier = Modifier.size(19.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text(
+                                                text = item.sender,
+                                                style = MaterialTheme.typography.titleMedium.copy(
+                                                    fontFamily = FontFamily.SansSerif,
+                                                    fontSize = 16.sp,
+                                                    fontWeight = if (isAlreadyRegistered) FontWeight.Medium else FontWeight.ExtraBold,
+                                                    textDirection = TextDirection.Ltr,
+                                                    textAlign = TextAlign.Right
+                                                ),
+                                                color = if (isAlreadyRegistered) Color.White.copy(alpha = 0.55f) else Color.White,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                            Text(
+                                                text = when {
+                                                    item.detectedBankTitleFa != null -> item.detectedBankTitleFa
+                                                    item.isPersonal -> "شماره موبایل"
+                                                    else -> "سرشماره خدماتی / پیامکی"
+                                                },
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = if (item.detectedBankTitleFa != null) FontWeight.Bold else FontWeight.Normal
+                                                ),
+                                                color = when {
+                                                    item.detectedBankTitleFa != null -> MirzaGreen
+                                                    else -> MirzaMutedText
+                                                },
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.width(10.dp))
+
+                                    // Left side in RTL: Status / Action Badge
+                                    if (isAlreadyRegistered) {
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = Color(0xFFFBBF24).copy(alpha = 0.14f),
+                                            border = BorderStroke(1.dp, Color(0xFFFBBF24).copy(alpha = 0.35f))
+                                        ) {
+                                            Text(
+                                                text = "(قبلاً ثبت شده)",
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 11.sp
+                                                ),
+                                                color = Color(0xFFFBBF24),
+                                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                                            )
+                                        }
+                                    } else {
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = MirzaGreen.copy(alpha = 0.14f),
+                                            border = BorderStroke(1.dp, MirzaGreen.copy(alpha = 0.35f))
+                                        ) {
+                                            Text(
+                                                text = "انتخاب",
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 12.sp
+                                                ),
+                                                color = MirzaGreen,
+                                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 5.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
 
                 HorizontalDivider(
                     thickness = 1.dp,
-                    color = Color.White.copy(alpha = 0.12f)
+                    color = Color(0xFF252E40)
                 )
 
+                // 5. Footer with Close button
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.End
+                        .padding(horizontal = 18.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Text(
+                        text = "با لمس هر سرشماره، بانک مرتبط نیز خودکار انتخاب می‌شود",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MirzaMutedText,
+                        modifier = Modifier.weight(1f)
+                    )
                     TextButton(
-                        onClick = onDismiss,
+                        onClick = triggerDismiss,
                         modifier = Modifier.testTag("close_received_senders_modal_button")
                     ) {
                         Text(
                             text = "بستن",
                             style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.ExtraBold
                             ),
                             color = Color(0xFF60A5FA)
                         )
                     }
                 }
             }
+        }
         }
     }
 }

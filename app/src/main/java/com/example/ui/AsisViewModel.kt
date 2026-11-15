@@ -506,12 +506,12 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                 "${android.provider.Telephony.Sms.DATE} DESC"
             )?.use { cursor ->
                 val addrIdx = cursor.getColumnIndex(android.provider.Telephony.Sms.ADDRESS)
-                var count = 0
-                while (cursor.moveToNext() && count < 60) {
+                var scannedRows = 0
+                while (cursor.moveToNext() && scannedRows < 600 && result.size < 150) {
+                    scannedRows++
                     val addr = if (addrIdx >= 0) cursor.getString(addrIdx)?.trim().orEmpty() else ""
                     if (addr.isNotEmpty()) {
                         result.add(addr)
-                        count++
                     }
                 }
             }
@@ -519,9 +519,18 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         }.getOrDefault(emptyList())
 
         val fallbackSampleSenders = listOf(
+            "B.QMEHRIRAN",
+            "+98200033",
+            "+98600060",
+            "+98200070",
+            "+98200084210",
+            "+98200090",
+            "+98200069",
+            "+98200040",
+            "+98200014",
+            "+9820000",
             "HamraheMan",
             "+989999987641",
-            "B.QMEHRIRAN",
             "+989373534023",
             "+989998622172",
             "+9830009014",
@@ -535,7 +544,19 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
             ".IRANCELL.",
             "+989019932340"
         )
-        return (inboxSenders + fallbackSampleSenders).distinct()
+        val combined = (inboxSenders + fallbackSampleSenders).distinct()
+        return combined.sortedWith(
+            compareBy<String>(
+                { sender ->
+                    val detected = SmsParser.detectBank(sender, "")
+                    val hasVisualSpec = BankVisualCatalog.findByCode(detected.code) != null
+                    if (hasVisualSpec) 0 else 1
+                },
+                { sender ->
+                    if (SmsParser.isPersonalSender(sender)) 1 else 0
+                }
+            )
+        )
     }
 
     companion object {
