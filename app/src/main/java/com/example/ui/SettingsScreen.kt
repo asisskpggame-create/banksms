@@ -110,6 +110,55 @@ fun SettingsScreen(
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Top Security & Sync Overview Strip
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Column {
+                        Text(
+                            text = "امضای دیجیتال HMAC-SHA256 + مخزن AES-256",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "پنجره تطبیق سرور: ${settings.lastServerWindowHours} ساعت • اختلاف ساعت: ${settings.lastClockOffsetMs}ms",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                StatusPill(
+                    label = if (isHttpsValid && isTokenValid) "آماده" else "تنظیم نشده",
+                    color = if (isHttpsValid && isTokenValid) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.tertiary
+                    }
+                )
+            }
+        }
+
         // App-Side Approval Controls Card
         AsisElevatedCard {
             Row(
@@ -117,15 +166,18 @@ fun SettingsScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SectionHeader(
-                    icon = Icons.Default.VerifiedUser,
-                    title = "تأیید خودکار در اپ",
-                    subtitle = if (settings.autoApproveInApp) {
-                        "روشن: پس از تطبیق دقیق مبلغ، فرمان تأیید امضاشده ارسال می‌شود"
-                    } else {
-                        "خاموش: پیامک تطبیق می‌خورد و برای تأیید دستی اعلان ارسال می‌شود"
-                    }
-                )
+                androidx.compose.foundation.layout.Box(modifier = Modifier.weight(1f)) {
+                    SectionHeader(
+                        icon = Icons.Default.VerifiedUser,
+                        title = "تأیید خودکار در اپ",
+                        subtitle = if (settings.autoApproveInApp) {
+                            "روشن: پس از تطبیق دقیق مبلغ، فرمان تأیید امضاشده ارسال می‌شود"
+                        } else {
+                            "خاموش: پیامک تطبیق می‌خورد و برای تأیید دستی اعلان ارسال می‌شود"
+                        }
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
                 Switch(
                     checked = settings.autoApproveInApp,
                     onCheckedChange = onToggleAutoApproveInApp,
@@ -222,15 +274,15 @@ fun SettingsScreen(
 
             if (basePanelPreview.isNotEmpty() && isHttpsValid) {
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(14.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
                             text = "GET  $basePanelPreview/sms-pending",
@@ -238,7 +290,7 @@ fun SettingsScreen(
                                 fontFamily = FontFamily.Monospace,
                                 textDirection = TextDirection.Ltr
                             ),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = MaterialTheme.colorScheme.secondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -248,7 +300,7 @@ fun SettingsScreen(
                                 fontFamily = FontFamily.Monospace,
                                 textDirection = TextDirection.Ltr
                             ),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = MaterialTheme.colorScheme.primary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -305,7 +357,7 @@ fun SettingsScreen(
                 onClick = { onSaveSettings(endpointInput, tokenInput, localMaxTomanInput) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
+                    .height(50.dp)
                     .testTag("save_settings_button"),
                 shape = RoundedCornerShape(14.dp)
             ) {

@@ -16,7 +16,7 @@ interface LogDao {
     @Query("DELETE FROM sms_records WHERE reason = 'promo'")
     suspend fun deletePromoLogs(): Int
 
-    @Query("SELECT * FROM sms_records WHERE status IN ('NEW', 'RETRY') AND amountMinor IS NOT NULL ORDER BY receivedMs ASC, id ASC")
+    @Query("SELECT * FROM sms_records WHERE status IN ('NEW', 'RETRY', 'UNKNOWN_DEPOSIT') AND amountMinor IS NOT NULL ORDER BY receivedMs ASC, id ASC")
     suspend fun getActiveDepositsForMatching(): List<SmsRecord>
 
     @Query("SELECT * FROM sms_records WHERE id = :id LIMIT 1")
@@ -31,7 +31,7 @@ interface LogDao {
     @Query("SELECT COUNT(*) FROM sms_records WHERE status = 'MATCHED'")
     fun observeMatchedCount(): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM sms_records WHERE status IN ('MANUAL', 'AMBIGUOUS', 'FAILED')")
+    @Query("SELECT COUNT(*) FROM sms_records WHERE status IN ('MANUAL', 'AMBIGUOUS', 'UNKNOWN_DEPOSIT', 'FAILED')")
     fun observeActionNeededCount(): Flow<Int>
 
     @Query("SELECT * FROM sms_records WHERE status = 'MATCHED' ORDER BY decidedMs DESC, id DESC LIMIT 1")
@@ -48,9 +48,9 @@ interface LogDao {
     suspend fun update(record: SmsRecord)
 
     /**
-     * Claim-first atomic update before network call (`NEW/RETRY/MANUAL -> CLAIMED`).
+     * Claim-first atomic update before network call (`NEW/RETRY/MANUAL/UNKNOWN_DEPOSIT -> CLAIMED`).
      */
-    @Query("UPDATE sms_records SET status = 'CLAIMED', matchedKind = :kind, matchedId = :publicId, attempts = attempts + 1 WHERE id = :id AND status IN ('NEW', 'RETRY', 'MANUAL')")
+    @Query("UPDATE sms_records SET status = 'CLAIMED', matchedKind = :kind, matchedId = :publicId, attempts = attempts + 1 WHERE id = :id AND status IN ('NEW', 'RETRY', 'MANUAL', 'UNKNOWN_DEPOSIT')")
     suspend fun claimForApproval(id: Long, kind: String, publicId: String): Int
 
     /**
@@ -62,9 +62,9 @@ interface LogDao {
     suspend fun releaseStaleClaims(): Int
 
     /**
-     * Expire `NEW` deposits older than `cutoffMs` (`now - match_window_hours`).
+     * Expire `NEW` and `UNKNOWN_DEPOSIT` deposits older than `cutoffMs` (`now - match_window_hours`).
      */
-    @Query("UPDATE sms_records SET status = 'EXPIRED', decidedMs = :nowMs, reason = 'expired_window' WHERE status = 'NEW' AND receivedMs < :cutoffMs")
+    @Query("UPDATE sms_records SET status = 'EXPIRED', decidedMs = :nowMs, reason = 'expired_window' WHERE status IN ('NEW', 'UNKNOWN_DEPOSIT') AND receivedMs < :cutoffMs")
     suspend fun expireOldNewDeposits(cutoffMs: Long, nowMs: Long): Int
 
     /**
@@ -73,9 +73,35 @@ interface LogDao {
     @Query("DELETE FROM sms_records WHERE storedMs < :cutoffMs")
     suspend fun deleteOlderThan(cutoffMs: Long): Int
 
-    @Query("UPDATE sms_records SET status = 'NEW', lastError = NULL WHERE status IN ('FAILED', 'RETRY') AND amountMinor IS NOT NULL AND reason != 'test_deposit_not_sent'")
+    @Query("UPDATE sms_records SET status = 'NEW', lastError = NULL WHERE status IN ('FAILED', 'RETRY', 'UNKNOWN_DEPOSIT') AND amountMinor IS NOT NULL AND reason != 'test_deposit_not_sent'")
     suspend fun resetFailedAndErrorLogsForRetry(): Int
 
     @Query("DELETE FROM sms_records")
     suspend fun clearAllLogs()
+
+    // --- Local Invoice Database (`pending_invoices`) for Smart Amount Matching ---
+
+    @Query("SELECT * FROM pending_invoices ORDER BY createdMs DESC, id DESC")
+    fun observeAllInvoices(): Flow<List<PendingInvoiceEntity>>
+
+    @Query("SELECT * FROM pending_invoices WHERE status = 'WAITING' ORDER BY createdMs ASC, id ASC")
+    suspend fun getWaitingInvoices(): List<PendingInvoiceEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertInvoice(invoice: PendingInvoiceEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertInvoices(invoices: List<PendingInvoiceEntity>)
+
+    @Query("UPDATE pending_invoices SET status = 'MATCHED', matchedSmsId = :smsId WHERE publicId = :publicId")
+    suspend fun markInvoiceMatched(publicId: String, smsId: Long)
+
+    @Query("DELETE FROM pending_invoices WHERE publicId = :publicId")
+    suspend fun deleteInvoiceByPublicId(publicId: String)
+
+    @Query("DELETE FROM pending_invoices WHERE status = 'WAITING' AND publicId NOT IN (:activePublicIds)")
+    suspend fun pruneResolvedServerInvoices(activePublicIds: List<String>)
+
+    @Query("DELETE FROM pending_invoices")
+    suspend fun clearAllInvoices()
 }

@@ -189,36 +189,81 @@ class ForwardWorker(
             )
             settingsRepo.recordTokenError(null)
 
-            // 3. Expire `NEW` deposits older than `match_window_hours` (using server clock)
+            val nowMs = System.currentTimeMillis()
+            if (pendingSuccess.items.isNotEmpty()) {
+                dao.upsertInvoices(
+                    pendingSuccess.items.map { item ->
+                        com.example.data.PendingInvoiceEntity(
+                            publicId = item.publicId,
+                            kind = item.kind,
+                            dueMinor = item.dueMinor,
+                            createdMs = item.at,
+                            syncedAtMs = nowMs,
+                            early = item.early,
+                            status = "WAITING"
+                        )
+                    }
+                )
+            }
+
+            // 3. Expire `NEW` and `UNKNOWN_DEPOSIT` deposits older than `match_window_hours` (using server clock)
             val windowMs = TimeUnit.HOURS.toMillis(pendingSuccess.matchWindowHours.toLong().coerceAtLeast(1L))
             val phoneCutoffMs = (pendingSuccess.serverNowMs - windowMs) - clockOffsetMs
-            dao.expireOldNewDeposits(cutoffMs = phoneCutoffMs, nowMs = System.currentTimeMillis())
+            dao.expireOldNewDeposits(cutoffMs = phoneCutoffMs, nowMs = nowMs)
 
             // Re-read active deposits after expiration
             val freshDeposits = dao.getActiveDepositsForMatching()
             if (freshDeposits.isEmpty()) {
                 return@withLock WorkOutcome.SUCCESS
             }
-            if (pendingSuccess.items.isEmpty()) {
-                // nothing waiting yet: the customer may still send the receipt -> look again later (backoff retry)
-                return@withLock if (freshDeposits.any { it.statusEnum == SmsStatus.NEW }) WorkOutcome.RETRY else WorkOutcome.SUCCESS
+
+            // Combine server items with any local waiting invoices in the database
+            val dbWaitingInvoices = dao.getWaitingInvoices()
+            val combinedItems = (
+                pendingSuccess.items + dbWaitingInvoices.map { inv ->
+                    com.example.data.Item(
+                        kind = inv.kind,
+                        publicId = inv.publicId,
+                        dueMinor = inv.dueMinor,
+                        at = inv.createdMs,
+                        early = inv.early
+                    )
+                }
+            ).distinctBy { it.publicId }
+
+            if (combinedItems.isEmpty()) {
+                // No waiting invoices exist on server or local DB -> mark deposits as UNKNOWN_DEPOSIT («واریز ناشناس»)
+                // while keeping them eligible for automatic matching if the server sends an invoice request within the window
+                for (rec in freshDeposits) {
+                    if (rec.statusEnum == SmsStatus.NEW) {
+                        val tomanStr = rec.amountMinor?.let { com.example.data.SmsParser.formatToman(it) } ?: "0"
+                        dao.update(
+                            rec.copy(
+                                status = SmsStatus.UNKNOWN_DEPOSIT.name,
+                                reason = "unknown_deposit",
+                                lastError = "واریز ناشناس: هیچ فاکتور منتظری با مبلغ $tomanStr تومان در سرور/دیتابیس یافت نشد (در صورت استعلام جدید سرور خودکار تطبیق داده می‌شود)."
+                            )
+                        )
+                    }
+                }
+                return@withLock WorkOutcome.RETRY
             }
 
             val byId = freshDeposits.associateBy { it.id }
             val matcherDeposits = freshDeposits.mapNotNull { rec ->
                 val amt = rec.amountMinor ?: return@mapNotNull null
+                // Allow 60-second grace tolerance so deposits arriving within 1 minute of invoice creation always match
                 Deposit(
                     id = rec.id,
                     amountMinor = amt,
-                    at = rec.receivedMs + clockOffsetMs
+                    at = rec.receivedMs + clockOffsetMs + 60_000L
                 )
             }
 
             // 4. Plan matches locally via `Matcher.plan`
-            val (pairs, ambiguousList) = Matcher.plan(matcherDeposits, pendingSuccess.items)
+            val (pairs, ambiguousList) = Matcher.plan(matcherDeposits, combinedItems)
 
             // 5. Handle ambiguous deposits (`I > D`)
-            val nowMs = System.currentTimeMillis()
             for (amb in ambiguousList) {
                 val rec = byId[amb.id] ?: continue
                 dao.update(
@@ -234,6 +279,56 @@ class ForwardWorker(
                     depositId = rec.id,
                     amountMinor = amb.amountMinor
                 )
+            }
+
+            // 5b. Classify unmatched deposits via SmartAmountMatcher (`MANUAL` vs `UNKNOWN_DEPOSIT`)
+            val pairedDepositIds = pairs.map { it.first.id }.toSet()
+            val ambiguousDepositIds = ambiguousList.map { it.id }.toSet()
+            val waitingInvoiceEntities = combinedItems.map { item ->
+                com.example.data.PendingInvoiceEntity(
+                    publicId = item.publicId,
+                    kind = item.kind,
+                    dueMinor = item.dueMinor,
+                    createdMs = item.at,
+                    early = item.early,
+                    status = "WAITING"
+                )
+            }
+
+            for (rec in freshDeposits) {
+                if (rec.id in pairedDepositIds || rec.id in ambiguousDepositIds) continue
+                val amt = rec.amountMinor ?: continue
+                val decision = com.example.data.SmartAmountMatcher.evaluateDepositAgainstInvoices(
+                    amountMinor = amt,
+                    depositAtServerMs = rec.receivedMs + clockOffsetMs,
+                    waitingInvoices = waitingInvoiceEntities
+                )
+                when (decision) {
+                    is com.example.data.SmartMatchDecision.NeedsManualReview -> {
+                        dao.update(
+                            rec.copy(
+                                status = SmsStatus.MANUAL.name,
+                                matchedKind = decision.candidateInvoice.kind,
+                                matchedId = decision.candidateInvoice.publicId,
+                                reason = "manual_review_needed",
+                                decidedMs = nowMs,
+                                lastError = decision.reasonFa
+                            )
+                        )
+                    }
+                    is com.example.data.SmartMatchDecision.UnknownDeposit -> {
+                        if (rec.statusEnum != SmsStatus.UNKNOWN_DEPOSIT) {
+                            dao.update(
+                                rec.copy(
+                                    status = SmsStatus.UNKNOWN_DEPOSIT.name,
+                                    reason = "unknown_deposit",
+                                    lastError = decision.reasonFa
+                                )
+                            )
+                        }
+                    }
+                    else -> Unit
+                }
             }
 
             // 6. Process matched pairs `(dep, item)`
@@ -287,8 +382,10 @@ class ForwardWorker(
                 }
             }
 
-            // deposits that matched nothing yet stay NEW until `match_window_hours` expires them: keep checking
-            val stillWaiting = dao.getActiveDepositsForMatching().any { it.statusEnum == SmsStatus.NEW }
+            // deposits that matched nothing yet stay active (NEW / UNKNOWN_DEPOSIT) until `match_window_hours` expires them
+            val stillWaiting = dao.getActiveDepositsForMatching().any {
+                it.statusEnum == SmsStatus.NEW || it.statusEnum == SmsStatus.UNKNOWN_DEPOSIT
+            }
             if (shouldRetryAny || stillWaiting) WorkOutcome.RETRY else WorkOutcome.SUCCESS
         }
 
@@ -444,6 +541,7 @@ class ForwardWorker(
                             lastError = null
                         )
                     )
+                    dao.markInvoiceMatched(itemPublicId, rec.id)
                     settingsRepo.recordTokenError(null)
                     ApprovalStepOutcome.DONE
                 }

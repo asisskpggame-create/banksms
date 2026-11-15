@@ -9,16 +9,34 @@ import androidx.room.PrimaryKey
  * `NEW | CLAIMED | IGNORED | MATCHED | MANUAL | AMBIGUOUS | EXPIRED | RETRY | FAILED`
  */
 enum class SmsStatus {
-    NEW,        // واریز معتبر جدید، منتظر تطبیق با سفارش‌های منتظر (GET /sms-pending)
-    CLAIMED,    // قفل‌شده قبل از ارسال درخواست شبکه (Claim-first safety)
-    IGNORED,    // پیامک غیر واریزی (برداشت، مانده، بدون مبلغ و...)
-    MATCHED,    // تطبیق و تأیید موفق در سرور (status = approved | duplicate)
-    MANUAL,     // تطبیق یافت شد ولی نیازمند تأیید دستی کاربر (تأیید خودکار خاموش، بالاتر از سقف، یا 409 سرور)
-    AMBIGUOUS,  // چند سفارش منتظر با مبلغ یکسان وجود دارد (I > D) — نیازمند بررسی دستی
-    EXPIRED,    // منقضی‌شده پس از گذشت match_window_hours
-    RETRY,      // خطای موقت شبکه / 5xx / 429 — در صف تلاش مجدد با Backoff
-    FAILED      // خطای دائمی (401 توکن/امضا نامعتبر)
+    NEW,             // واریز معتبر جدید، منتظر تطبیق با سفارش‌های منتظر (GET /sms-pending)
+    CLAIMED,         // قفل‌شده قبل از ارسال درخواست شبکه (Claim-first safety)
+    IGNORED,         // پیامک غیر واریزی (برداشت، مانده، بدون مبلغ و...)
+    MATCHED,         // تطبیق و تأیید موفق در سرور (status = approved | duplicate)
+    MANUAL,          // نیازمند بررسی دستی (تأیید خودکار خاموش، بالاتر از سقف، اختلاف ساعت/مبلغ یا 409 سرور)
+    AMBIGUOUS,       // چند سفارش منتظر با مبلغ یکسان وجود دارد (I > D) — نیازمند بررسی دستی
+    UNKNOWN_DEPOSIT, // واریز ناشناس (مبلغ با هیچ فاکتور فعالی در دیتابیس/سرور تطابق ندارد؛ آمادهٔ تطبیق در صورت استعلام سرور)
+    EXPIRED,         // منقضی‌شده پس از گذشت match_window_hours
+    RETRY,           // خطای موقت شبکه / عدم اتصال اینترنت — در صف تلاش مجدد خودکار پس از وصل شدن اینترنت
+    FAILED           // خطای دائمی (401 توکن/امضا نامعتبر)
 }
+
+@Entity(
+    tableName = "pending_invoices",
+    indices = [Index(value = ["publicId"], unique = true)]
+)
+data class PendingInvoiceEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val publicId: String,          // شناسه فاکتور در سرور (مثلاً ORD-1042)
+    val kind: String = "order",    // "order" | "topup"
+    val dueMinor: Long,            // مبلغ دقیق فاکتور به ریال
+    val createdMs: Long,           // زمان ثبت فاکتور در سرور
+    val syncedAtMs: Long = System.currentTimeMillis(), // زمان دریافت استعلام از سرور
+    val early: Boolean = false,
+    val status: String = "WAITING", // "WAITING" | "MATCHED" | "EXPIRED"
+    val matchedSmsId: Long? = null
+)
 
 @Entity(
     tableName = "sms_records",

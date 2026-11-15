@@ -111,10 +111,14 @@ fun HomeScreen(
     errorLogs: List<SmsRecord> = emptyList(),
     onRetrySingleLog: (SmsRecord) -> Unit = {},
     onRetryAllFailed: () -> Unit = {},
+    invoices: List<com.example.data.PendingInvoiceEntity> = emptyList(),
+    onRegisterInvoice: (publicId: String, amountToman: Long, kind: String) -> Unit = { _, _, _ -> },
+    onRemoveInvoice: (publicId: String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     var showSimulateDialog by rememberSaveable { mutableStateOf(false) }
+    var showAddInvoiceDialog by rememberSaveable { mutableStateOf(false) }
 
     val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as? PowerManager
     val batteryOptIgnored = isIgnoringBatteryOptimizations ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -347,6 +351,14 @@ fun HomeScreen(
             }
         }
 
+        // Smart Amount Matching & 1-Minute Server Invoice Verification Module
+        SmartAmountMatchingModuleCard(
+            invoices = invoices,
+            onOpenAddInvoice = { showAddInvoiceDialog = true },
+            onFlushQueue = onFlushQueue,
+            onRemoveInvoice = onRemoveInvoice
+        )
+
         // Last Matched Summary Card
         LastMatchedSummaryCard(
             lastMatchedLog = lastSentLog,
@@ -398,6 +410,16 @@ fun HomeScreen(
             onSendSimulated = { sender, body ->
                 showSimulateDialog = false
                 onSimulateSms(sender, body)
+            }
+        )
+    }
+
+    if (showAddInvoiceDialog) {
+        RegisterInvoiceInquiryDialog(
+            onDismiss = { showAddInvoiceDialog = false },
+            onConfirm = { publicId, amountToman, kind ->
+                showAddInvoiceDialog = false
+                onRegisterInvoice(publicId, amountToman, kind)
             }
         )
     }
@@ -1176,3 +1198,217 @@ fun rememberFormattedTime(timestampMs: Long): String {
         sdf.format(Date(timestampMs))
     }
 }
+
+@Composable
+private fun SmartAmountMatchingModuleCard(
+    invoices: List<com.example.data.PendingInvoiceEntity>,
+    onOpenAddInvoice: () -> Unit,
+    onFlushQueue: () -> Unit,
+    onRemoveInvoice: (String) -> Unit
+) {
+    val waitingInvoices = remember(invoices) { invoices.filter { it.status == "WAITING" } }
+    val matchedInvoices = remember(invoices) { invoices.filter { it.status == "MATCHED" } }
+
+    AsisElevatedCard(
+        modifier = Modifier.testTag("smart_amount_matcher_card"),
+        borderColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f)
+    ) {
+        SectionHeader(
+            icon = Icons.Default.AutoAwesome,
+            title = "ماژول تطبیق هوشمند مبلغ و فاکتور (۱ دقیقه‌ای)",
+            subtitle = "استعلام خودکار سرور هر ۱۵ ثانیه • تشخیص واریز ناشناس و بررسی مجدد پس از وصل اینترنت",
+            tint = MaterialTheme.colorScheme.secondary
+        )
+
+        Text(
+            text = "با دریافت هر پیامک واریز یا استعلام فاکتور از سرور، مبلغ به صورت دقیق با فاکتورهای دیتابیس مقایسه می‌شود. در صورت تطابق، ظرف کمتر از ۱ دقیقه تأیید می‌شود؛ در صورت عدم تطابق، وضعیت «واریز ناشناس» یا «نیاز به بررسی دستی» ثبت شده و در صورت قطعی اینترنت، به محض وصل شدن مجدد شبکه خودکار بررسی و تأیید می‌گردد.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Surface(
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.25f))
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text(
+                        text = "${waitingInvoices.size} فاکتور",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    Text(
+                        text = "منتظر تطبیق در دیتابیس",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Surface(
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text(
+                        text = "${matchedInvoices.size} فاکتور",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "تأییدشده در لاگ",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        if (waitingInvoices.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (inv in waitingInvoices.take(3)) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "فاکتور ${inv.publicId} • ${SmsParser.formatToman(inv.dueMinor)} تومان",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "${SmsParser.formatRial(inv.dueMinor)} ریال • در انتظار تطبیق با لاگ پیامک",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(
+                                onClick = { onRemoveInvoice(inv.publicId) },
+                                modifier = Modifier.testTag("remove_invoice_${inv.publicId}")
+                            ) {
+                                Text("حذف", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = onOpenAddInvoice,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+                    .testTag("register_invoice_inquiry_button"),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("+ استعلام / ثبت فاکتور", fontWeight = FontWeight.Bold)
+            }
+            OutlinedButton(
+                onClick = onFlushQueue,
+                modifier = Modifier
+                    .height(48.dp)
+                    .testTag("verify_server_invoices_now_button"),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("چک سرور")
+            }
+        }
+    }
+}
+
+@Composable
+private fun RegisterInvoiceInquiryDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (publicId: String, amountToman: Long, kind: String) -> Unit
+) {
+    var publicId by rememberSaveable { mutableStateOf("ORD-${(100..999).random()}") }
+    var amountTomanStr by rememberSaveable { mutableStateOf("5000000") }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(22.dp),
+        title = {
+            Text(
+                text = "استعلام / ثبت فاکتور در دیتابیس",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "مبلغ فاکتور را وارد کنید؛ اپلیکیشن بلافاصله لاگ پیامک‌های دریافتی را بررسی کرده و اگر این مبلغ واریز شده باشد در کمتر از ۱ دقیقه تأیید می‌کند (یا منتظر پیامک می‌ماند).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = publicId,
+                    onValueChange = { publicId = it },
+                    label = { Text("شناسه فاکتور (مثلاً ORD-105)") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("invoice_id_input")
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = amountTomanStr,
+                    onValueChange = { amountTomanStr = it.filter { ch -> ch.isDigit() } },
+                    label = { Text("مبلغ فاکتور (به تومان)") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("invoice_amount_toman_input")
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val amountToman = amountTomanStr.trim().toLongOrNull() ?: 0L
+                    onConfirm(publicId, amountToman, "order")
+                },
+                enabled = (amountTomanStr.trim().toLongOrNull() ?: 0L) > 0L,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.testTag("confirm_register_invoice_button")
+            ) {
+                Text("بررسی لاگ و ثبت فاکتور")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("انصراف")
+            }
+        }
+    )
+}
+

@@ -115,10 +115,48 @@ class SmsReceiver : BroadcastReceiver() {
                 return false
             }
 
-            val initialStatus = if (parsed.amountMinor == null) {
-                SmsStatus.IGNORED
-            } else {
-                SmsStatus.NEW
+            val waitingInvoices = dao.getWaitingInvoices()
+            var initialStatus = SmsStatus.NEW
+            var matchedKind: String? = null
+            var matchedId: String? = null
+            var effectiveReason = parsed.reason
+            var decisionNote: String? = null
+
+            if (parsed.amountMinor == null) {
+                initialStatus = SmsStatus.IGNORED
+            } else if (waitingInvoices.isNotEmpty()) {
+                val depositServerMs = receivedAtMs + settings.lastClockOffsetMs
+                when (val decision = com.example.data.SmartAmountMatcher.evaluateDepositAgainstInvoices(
+                    amountMinor = parsed.amountMinor,
+                    depositAtServerMs = depositServerMs,
+                    waitingInvoices = waitingInvoices
+                )) {
+                    is com.example.data.SmartMatchDecision.ExactMatch -> {
+                        initialStatus = SmsStatus.NEW
+                        matchedKind = decision.invoice.kind
+                        matchedId = decision.invoice.publicId
+                    }
+                    is com.example.data.SmartMatchDecision.AmbiguousSameAmount -> {
+                        initialStatus = SmsStatus.AMBIGUOUS
+                        effectiveReason = "same_amount"
+                        decisionNote = decision.reasonFa
+                    }
+                    is com.example.data.SmartMatchDecision.NeedsManualReview -> {
+                        initialStatus = SmsStatus.MANUAL
+                        matchedKind = decision.candidateInvoice.kind
+                        matchedId = decision.candidateInvoice.publicId
+                        effectiveReason = "manual_review_needed"
+                        decisionNote = decision.reasonFa
+                    }
+                    is com.example.data.SmartMatchDecision.UnknownDeposit -> {
+                        initialStatus = SmsStatus.UNKNOWN_DEPOSIT
+                        effectiveReason = "unknown_deposit"
+                        decisionNote = decision.reasonFa
+                    }
+                    com.example.data.SmartMatchDecision.NoActiveInvoicesInDb -> {
+                        initialStatus = SmsStatus.NEW
+                    }
+                }
             }
 
             val record = SmsRecord(
@@ -128,15 +166,18 @@ class SmsReceiver : BroadcastReceiver() {
                 body = rawBody, // Raw unmodified SMS text preserved per Section 2
                 normalized = normalized,
                 amountMinor = parsed.amountMinor,
-                reason = parsed.reason,
+                reason = effectiveReason,
                 status = initialStatus.name,
+                matchedKind = matchedKind,
+                matchedId = matchedId,
                 receivedMs = receivedAtMs,
                 storedMs = storedAtMs,
-                decidedMs = if (initialStatus == SmsStatus.IGNORED) storedAtMs else null
+                decidedMs = if (initialStatus == SmsStatus.IGNORED) storedAtMs else null,
+                lastError = decisionNote
             )
 
             val rowId = dao.insertIgnoreDuplicate(record)
-            if (rowId != -1L && initialStatus == SmsStatus.NEW) {
+            if (rowId != -1L && parsed.amountMinor != null) {
                 // WorkManager, not a network call inside goAsync(): the system ends a receiver after ~10 s
                 ForwardWorker.enqueueMatcherSweep(appContext)
                 return true

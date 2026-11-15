@@ -145,6 +145,7 @@ fun AsisAppScreen(
     val settings by asisViewModel.settingsState.collectAsStateWithLifecycle()
     val isOnline by asisViewModel.isOnlineState.collectAsStateWithLifecycle()
     val allLogs by asisViewModel.allLogs.collectAsStateWithLifecycle()
+    val allInvoices by asisViewModel.allInvoices.collectAsStateWithLifecycle()
     val queueCount by asisViewModel.queueCount.collectAsStateWithLifecycle()
     val sentCount by asisViewModel.sentCount.collectAsStateWithLifecycle()
     val failedCount by asisViewModel.failedCount.collectAsStateWithLifecycle()
@@ -540,9 +541,9 @@ fun AsisAppScreen(
                             AsisTab.HOME -> {
                                 val errorLogs = remember(allLogs) {
                                     allLogs.filter {
-                                        !it.lastError.isNullOrBlank() ||
-                                            it.statusEnum == com.example.data.SmsStatus.FAILED ||
-                                            (it.statusEnum == com.example.data.SmsStatus.RETRY && it.attempts > 0)
+                                        it.statusEnum == com.example.data.SmsStatus.FAILED ||
+                                            (it.statusEnum == com.example.data.SmsStatus.RETRY &&
+                                                (it.attempts > 0 || !it.lastError.isNullOrBlank()))
                                     }
                                 }
                                 HomeScreen(
@@ -564,7 +565,10 @@ fun AsisAppScreen(
                                     onNavigateToLogs = { currentTab = AsisTab.LOGS },
                                     errorLogs = errorLogs,
                                     onRetrySingleLog = asisViewModel::retrySingleLog,
-                                    onRetryAllFailed = asisViewModel::retryAllFailedLogs
+                                    onRetryAllFailed = asisViewModel::retryAllFailedLogs,
+                                    invoices = allInvoices,
+                                    onRegisterInvoice = asisViewModel::registerInvoiceAndVerifyLogs,
+                                    onRemoveInvoice = asisViewModel::removeInvoice
                                 )
                             }
 
@@ -573,7 +577,8 @@ fun AsisAppScreen(
                                 onApproveManually = asisViewModel::approveRecordManually,
                                 onRetrySingle = asisViewModel::retrySingleLog,
                                 onRetryAllFailed = asisViewModel::retryAllFailedLogs,
-                                onClearAllLogs = asisViewModel::clearAllLogs
+                                onClearAllLogs = asisViewModel::clearAllLogs,
+                                onMarkAsPersonal = asisViewModel::markDepositAsPersonalIgnored
                             )
 
                             AsisTab.BANKS -> BanksScreen(

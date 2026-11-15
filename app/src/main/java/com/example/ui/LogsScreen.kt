@@ -71,16 +71,21 @@ import com.example.ui.components.StatusPill
 
 private enum class LogFilter(val labelFa: String) {
     ALL("همه"),
+    UNKNOWN_DEPOSIT("واریز ناشناس"),
+    MANUAL_AMBIGUOUS("نیاز به بررسی دستی"),
     FAILED_ERRORS("خطا در ارسال"),
     MATCHED("تأییدشده"),
-    MANUAL_AMBIGUOUS("بررسی دستی"),
     NEW_RETRY("در صف"),
     IGNORED("نادیده / تست")
 }
 
 private fun SmsRecord.hasSendError(): Boolean =
     statusEnum == SmsStatus.FAILED ||
-        (!lastError.isNullOrBlank() && statusEnum != SmsStatus.MATCHED && statusEnum != SmsStatus.IGNORED)
+        (!lastError.isNullOrBlank() &&
+            statusEnum != SmsStatus.MATCHED &&
+            statusEnum != SmsStatus.IGNORED &&
+            statusEnum != SmsStatus.UNKNOWN_DEPOSIT &&
+            statusEnum != SmsStatus.MANUAL)
 
 @Composable
 fun LogsScreen(
@@ -89,6 +94,7 @@ fun LogsScreen(
     onRetrySingle: (SmsRecord) -> Unit,
     onClearAllLogs: () -> Unit,
     onRetryAllFailed: () -> Unit = {},
+    onMarkAsPersonal: (SmsRecord) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var selectedFilter by rememberSaveable { mutableStateOf(LogFilter.ALL) }
@@ -108,13 +114,15 @@ fun LogsScreen(
         derivedStateOf {
             mapOf(
                 LogFilter.ALL to visibleLogs.size,
-                LogFilter.FAILED_ERRORS to visibleLogs.count { it.hasSendError() },
-                LogFilter.MATCHED to visibleLogs.count { it.statusEnum == SmsStatus.MATCHED },
+                LogFilter.UNKNOWN_DEPOSIT to visibleLogs.count {
+                    it.statusEnum == SmsStatus.UNKNOWN_DEPOSIT
+                },
                 LogFilter.MANUAL_AMBIGUOUS to visibleLogs.count {
                     it.statusEnum == SmsStatus.MANUAL ||
-                        it.statusEnum == SmsStatus.AMBIGUOUS ||
-                        it.statusEnum == SmsStatus.FAILED
+                        it.statusEnum == SmsStatus.AMBIGUOUS
                 },
+                LogFilter.FAILED_ERRORS to visibleLogs.count { it.hasSendError() },
+                LogFilter.MATCHED to visibleLogs.count { it.statusEnum == SmsStatus.MATCHED },
                 LogFilter.NEW_RETRY to visibleLogs.count {
                     it.statusEnum == SmsStatus.NEW ||
                         it.statusEnum == SmsStatus.RETRY ||
@@ -131,13 +139,15 @@ fun LogsScreen(
         derivedStateOf {
             val statusFiltered = when (selectedFilter) {
                 LogFilter.ALL -> visibleLogs
-                LogFilter.FAILED_ERRORS -> visibleLogs.filter { it.hasSendError() }
-                LogFilter.MATCHED -> visibleLogs.filter { it.statusEnum == SmsStatus.MATCHED }
+                LogFilter.UNKNOWN_DEPOSIT -> visibleLogs.filter {
+                    it.statusEnum == SmsStatus.UNKNOWN_DEPOSIT
+                }
                 LogFilter.MANUAL_AMBIGUOUS -> visibleLogs.filter {
                     it.statusEnum == SmsStatus.MANUAL ||
-                        it.statusEnum == SmsStatus.AMBIGUOUS ||
-                        it.statusEnum == SmsStatus.FAILED
+                        it.statusEnum == SmsStatus.AMBIGUOUS
                 }
+                LogFilter.FAILED_ERRORS -> visibleLogs.filter { it.hasSendError() }
+                LogFilter.MATCHED -> visibleLogs.filter { it.statusEnum == SmsStatus.MATCHED }
                 LogFilter.NEW_RETRY -> visibleLogs.filter {
                     it.statusEnum == SmsStatus.NEW ||
                         it.statusEnum == SmsStatus.RETRY ||
@@ -357,7 +367,8 @@ fun LogsScreen(
                             }
                         },
                         onOpenManualDialog = { manualDialogRecord = entry },
-                        onRetry = { onRetrySingle(entry) }
+                        onRetry = { onRetrySingle(entry) },
+                        onMarkAsPersonal = { onMarkAsPersonal(entry) }
                     )
                 }
             }
@@ -413,7 +424,8 @@ private fun SmsRecordCard(
     entry: SmsRecord,
     onDirectApprove: () -> Unit,
     onOpenManualDialog: () -> Unit,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    onMarkAsPersonal: () -> Unit = {}
 ) {
     val isTestDeposit = entry.reason == "test_deposit_not_sent"
     val (statusLabel, badgeColor, statusIcon) = when (entry.statusEnum) {
@@ -421,13 +433,15 @@ private fun SmsRecordCard(
         SmsStatus.CLAIMED -> Triple("در حال ارسال", Color(0xFFF59E0B), Icons.Default.HourglassTop)
         SmsStatus.NEW -> Triple("واریز جدید", Color(0xFFF59E0B), Icons.Default.HourglassTop)
         SmsStatus.RETRY -> Triple("تلاش مجدد (${entry.attempts})", Color(0xFFF59E0B), Icons.Default.HourglassTop)
-        SmsStatus.MANUAL -> Triple("نیازمند تأیید", Color(0xFF06B6D4), Icons.Default.WarningAmber)
-        SmsStatus.AMBIGUOUS -> Triple("چند سفارش هم‌مبلغ", Color(0xFFF43F5E), Icons.Default.WarningAmber)
+        SmsStatus.MANUAL -> Triple("نیاز به بررسی دستی", Color(0xFF06B6D4), Icons.Default.WarningAmber)
+        SmsStatus.AMBIGUOUS -> Triple("نیاز به بررسی دستی (چند فاکتور)", Color(0xFFF43F5E), Icons.Default.WarningAmber)
+        SmsStatus.UNKNOWN_DEPOSIT -> Triple("واریز ناشناس", Color(0xFFA855F7), Icons.Default.WarningAmber)
         SmsStatus.EXPIRED -> Triple("منقضی", Color(0xFF64748B), Icons.Default.RemoveCircleOutline)
         SmsStatus.IGNORED -> when {
             isTestDeposit -> Triple("تست محلی", Color(0xFF06B6D4), Icons.Default.Science)
             entry.reason == "promo" -> Triple("تبلیغاتی", Color(0xFF64748B), Icons.Default.RemoveCircleOutline)
             entry.reason == "debit" -> Triple("برداشت", Color(0xFF64748B), Icons.Default.RemoveCircleOutline)
+            entry.reason == "personal_unrelated" -> Triple("واریز شخصی", Color(0xFF64748B), Icons.Default.RemoveCircleOutline)
             else -> Triple("نادیده", Color(0xFF64748B), Icons.Default.RemoveCircleOutline)
         }
         SmsStatus.FAILED -> Triple("خطا (${entry.httpCode ?: 401})", Color(0xFFF43F5E), Icons.Default.Error)
@@ -436,6 +450,7 @@ private fun SmsRecordCard(
     val hasActionButtons = entry.amountMinor != null &&
         entry.statusEnum != SmsStatus.MATCHED &&
         entry.statusEnum != SmsStatus.CLAIMED &&
+        entry.statusEnum != SmsStatus.IGNORED &&
         !isTestDeposit
 
     Surface(
@@ -578,18 +593,23 @@ private fun SmsRecordCard(
             }
 
             if (!entry.lastError.isNullOrBlank()) {
+                val isUnknownDeposit = entry.statusEnum == SmsStatus.UNKNOWN_DEPOSIT
+                val isManualReview = entry.statusEnum == SmsStatus.MANUAL
                 val isCriticalError = entry.statusEnum == SmsStatus.FAILED ||
                     entry.statusEnum == SmsStatus.AMBIGUOUS ||
                     entry.statusEnum == SmsStatus.RETRY
-                val errContainer = if (isCriticalError) {
-                    MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
-                } else {
-                    MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f)
+
+                val errContainer = when {
+                    isUnknownDeposit -> Color(0xFFA855F7).copy(alpha = 0.14f)
+                    isManualReview -> Color(0xFF06B6D4).copy(alpha = 0.14f)
+                    isCriticalError -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+                    else -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f)
                 }
-                val errAccent = if (isCriticalError) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.tertiary
+                val errAccent = when {
+                    isUnknownDeposit -> Color(0xFFC084FC)
+                    isManualReview -> Color(0xFF22D3EE)
+                    isCriticalError -> MaterialTheme.colorScheme.error
+                    else -> MaterialTheme.colorScheme.tertiary
                 }
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -605,24 +625,28 @@ private fun SmsRecordCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Error,
-                            contentDescription = "علت خطا",
+                            imageVector = if (isUnknownDeposit || isManualReview) Icons.Default.WarningAmber else Icons.Default.Error,
+                            contentDescription = "جزئیات وضعیت",
                             tint = errAccent,
                             modifier = Modifier.size(18.dp)
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = buildString {
-                                    append("علت خطا در ارسال")
-                                    if (entry.httpCode != null) {
-                                        append(" (کد HTTP ${entry.httpCode})")
-                                    } else {
-                                        append(" (خطای ارتباط / عدم اتصال)")
+                                text = when {
+                                    isUnknownDeposit -> "نتیجهٔ ماژول تطبیق هوشمند (واریز ناشناس):"
+                                    isManualReview -> "نتیجهٔ ماژول تطبیق هوشمند (نیاز به بررسی دستی):"
+                                    else -> buildString {
+                                        append("علت خطا در ارسال")
+                                        if (entry.httpCode != null) {
+                                            append(" (کد HTTP ${entry.httpCode})")
+                                        } else {
+                                            append(" (خطای ارتباط / عدم اتصال)")
+                                        }
+                                        if (entry.attempts > 0) {
+                                            append(" • تلاش #${entry.attempts}")
+                                        }
+                                        append(":")
                                     }
-                                    if (entry.attempts > 0) {
-                                        append(" • تلاش #${entry.attempts}")
-                                    }
-                                    append(":")
                                 },
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
@@ -684,6 +708,7 @@ private fun SmsRecordCard(
                         }
                     } else if (entry.statusEnum == SmsStatus.AMBIGUOUS ||
                         entry.statusEnum == SmsStatus.MANUAL ||
+                        entry.statusEnum == SmsStatus.UNKNOWN_DEPOSIT ||
                         entry.statusEnum == SmsStatus.FAILED
                     ) {
                         OutlinedButton(
@@ -698,15 +723,32 @@ private fun SmsRecordCard(
                         }
                     }
 
+                    if (entry.statusEnum == SmsStatus.UNKNOWN_DEPOSIT ||
+                        entry.statusEnum == SmsStatus.MANUAL ||
+                        entry.statusEnum == SmsStatus.AMBIGUOUS
+                    ) {
+                        OutlinedButton(
+                            onClick = onMarkAsPersonal,
+                            modifier = Modifier
+                                .height(48.dp)
+                                .testTag("mark_personal_button_${entry.id}"),
+                            contentPadding = PaddingValues(horizontal = 12.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("واریز شخصی")
+                        }
+                    }
+
+                    val isSendError = entry.hasSendError()
                     Button(
                         onClick = onRetry,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (!entry.lastError.isNullOrBlank()) {
+                            containerColor = if (isSendError) {
                                 MaterialTheme.colorScheme.error
                             } else {
                                 MaterialTheme.colorScheme.secondaryContainer
                             },
-                            contentColor = if (!entry.lastError.isNullOrBlank()) {
+                            contentColor = if (isSendError) {
                                 MaterialTheme.colorScheme.onError
                             } else {
                                 MaterialTheme.colorScheme.onSecondaryContainer
@@ -725,7 +767,7 @@ private fun SmsRecordCard(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (!entry.lastError.isNullOrBlank()) "تلاش مجدد دستی" else "بررسی مجدد",
+                            text = if (isSendError) "تلاش مجدد دستی" else "بررسی مجدد",
                             fontWeight = FontWeight.Bold
                         )
                     }

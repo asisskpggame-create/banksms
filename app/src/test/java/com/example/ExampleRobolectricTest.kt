@@ -153,6 +153,65 @@ class ExampleRobolectricTest {
             val retriedRec = db.logDao().getById(recordId)
             assertEquals(com.example.data.SmsStatus.NEW.name, retriedRec?.status)
             org.junit.Assert.assertNull(retriedRec?.lastError)
+
+            // Verify SmartAmountMatcher:
+            // 1. Insert a waiting invoice in DB (ORD-701 for 2,500,000 Toman = 25,000,000 Rial)
+            val nowMs = System.currentTimeMillis()
+            db.logDao().upsertInvoice(
+                com.example.data.PendingInvoiceEntity(
+                    publicId = "ORD-701",
+                    kind = "order",
+                    dueMinor = 25_000_000L,
+                    createdMs = nowMs - 10_000L,
+                    status = "WAITING"
+                )
+            )
+
+            // 2. Incoming unrelated deposit (80,000,000 Rial) -> marked as UNKNOWN_DEPOSIT («واریز ناشناس»)
+            val unknownBody = "بانک ملت\nواریز به حساب\nمبلغ: 80,000,000ریال\nمانده: 170,000,000ریال"
+            SmsReceiver.ingestIncomingSms(
+                appContext = app,
+                sender = "98200033",
+                rawBody = unknownBody,
+                receivedAtMs = nowMs
+            )
+            val unknownFp = com.example.data.SmsParser.fingerprint("98200033", unknownBody)
+            val unknownSaved = db.logDao().getByFingerprint(unknownFp)
+            assertNotNull(unknownSaved)
+            assertEquals(com.example.data.SmsStatus.UNKNOWN_DEPOSIT.name, unknownSaved?.status)
+
+            // 3. Incoming 10x discrepancy deposit (2,500,000 Rial instead of 25,000,000 Rial) -> marked as MANUAL («نیاز به بررسی دستی»)
+            val manualBody = "بانک ملت\nواریز به حساب\nمبلغ: 2,500,000ریال\nمانده: 172,500,000ریال"
+            SmsReceiver.ingestIncomingSms(
+                appContext = app,
+                sender = "98200033",
+                rawBody = manualBody,
+                receivedAtMs = nowMs
+            )
+            val manualFp = com.example.data.SmsParser.fingerprint("98200033", manualBody)
+            val manualSaved = db.logDao().getByFingerprint(manualFp)
+            assertNotNull(manualSaved)
+            assertEquals(com.example.data.SmsStatus.MANUAL.name, manualSaved?.status)
+            assertEquals("ORD-701", manualSaved?.matchedId)
+
+            // 4. Server sends invoice inquiry for 80,000,000 Rial (ORD-702) within 1 minute -> matches the UNKNOWN_DEPOSIT in logs!
+            val serverInquiryInvoice = com.example.data.PendingInvoiceEntity(
+                publicId = "ORD-702",
+                kind = "order",
+                dueMinor = 80_000_000L,
+                createdMs = nowMs + 20_000L,
+                status = "WAITING"
+            )
+            val activeLogs = db.logDao().getActiveDepositsForMatching()
+            val logCheck = com.example.data.SmartAmountMatcher.verifyServerInvoiceInLogs(
+                invoice = serverInquiryInvoice,
+                activeDeposits = activeLogs
+            )
+            assertTrue(logCheck is com.example.data.InvoiceLogCheckResult.MatchedInLog)
+            assertEquals(
+                unknownSaved?.id,
+                (logCheck as com.example.data.InvoiceLogCheckResult.MatchedInLog).depositRecord.id
+            )
         }
     }
 }

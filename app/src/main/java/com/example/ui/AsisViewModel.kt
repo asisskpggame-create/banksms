@@ -50,6 +50,9 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
     val allLogs: StateFlow<List<SmsRecord>> = logDao.observeAllLogs()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val allInvoices: StateFlow<List<com.example.data.PendingInvoiceEntity>> = logDao.observeAllInvoices()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val queueCount: StateFlow<Int> = logDao.observeQueueCount()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
@@ -73,10 +76,10 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runCatching { logDao.deletePromoLogs() }
         }
-        // Periodic 30-second matcher loop per Section 1 of APP_SIDE_APPROVAL_SPEC.md
+        // Fast 15-second server invoice inquiry & log matcher loop (guarantees < 1 minute verification)
         viewModelScope.launch {
             while (isActive) {
-                delay(30_000L)
+                delay(15_000L)
                 runCatching {
                     val current = settingsRepo.readSettings()
                     if (current.serviceEnabled && current.isConfigured) {
@@ -369,7 +372,99 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
     fun clearAllLogs() {
         viewModelScope.launch {
             logDao.clearAllLogs()
-            _snackbarMessage.value = "تمام لاگ‌ها پاک شدند."
+            logDao.clearAllInvoices()
+            _snackbarMessage.value = "تمام لاگ‌ها و فاکتورهای موقت پاک شدند."
+        }
+    }
+
+    /**
+     * Registers an invoice request (from server inquiry or manual entry) into `pending_invoices`,
+     * immediately checks the SMS logs (`NEW`, `RETRY`, `UNKNOWN_DEPOSIT`) for a matching deposit amount,
+     * and if found, approves the invoice in < 1 minute (or queues `RETRY` if offline).
+     */
+    fun registerInvoiceAndVerifyLogs(publicId: String, amountToman: Long, kind: String = "order") {
+        val cleanId = publicId.trim().ifEmpty { "INV-${(1000..9999).random()}" }
+        if (amountToman <= 0L) {
+            _snackbarMessage.value = "لطفاً مبلغ فاکتور (به تومان) را به درستی وارد کنید."
+            return
+        }
+        val dueMinor = amountToman * 10L
+        val nowMs = System.currentTimeMillis()
+        viewModelScope.launch {
+            val settings = settingsRepo.readSettings()
+            val invoice = com.example.data.PendingInvoiceEntity(
+                publicId = cleanId,
+                kind = kind,
+                dueMinor = dueMinor,
+                createdMs = nowMs + settings.lastClockOffsetMs,
+                syncedAtMs = nowMs,
+                status = "WAITING"
+            )
+            logDao.upsertInvoice(invoice)
+
+            // Check existing SMS logs (`NEW`, `RETRY`, `UNKNOWN_DEPOSIT`) immediately
+            val activeDeposits = logDao.getActiveDepositsForMatching()
+            val checkResult = com.example.data.SmartAmountMatcher.verifyServerInvoiceInLogs(
+                invoice = invoice,
+                activeDeposits = activeDeposits,
+                clockOffsetMs = settings.lastClockOffsetMs
+            )
+
+            when (checkResult) {
+                is com.example.data.InvoiceLogCheckResult.MatchedInLog -> {
+                    val rec = checkResult.depositRecord
+                    if (settings.isConfigured) {
+                        logDao.update(
+                            rec.copy(
+                                status = SmsStatus.NEW.name,
+                                matchedKind = kind,
+                                matchedId = cleanId,
+                                lastError = null
+                            )
+                        )
+                        _snackbarMessage.value = "تطبیق هوشمند در لاگ یافت شد (${SmsParser.formatToman(dueMinor)} تومان)؛ در حال ارسال تأیید فاکتور $cleanId به سرور..."
+                        ForwardWorker.runManualApproveNow(appContext, rec.id)
+                    } else {
+                        logDao.update(
+                            rec.copy(
+                                status = SmsStatus.MATCHED.name,
+                                matchedKind = kind,
+                                matchedId = cleanId,
+                                decidedMs = nowMs,
+                                reason = "",
+                                lastError = null
+                            )
+                        )
+                        logDao.markInvoiceMatched(cleanId, rec.id)
+                        _snackbarMessage.value = "فاکتور $cleanId با واریز ${SmsParser.formatToman(dueMinor)} تومان در لاگ مطابقت داشت و بلافاصله تأیید شد!"
+                    }
+                }
+                else -> {
+                    _snackbarMessage.value = "فاکتور $cleanId (${SmsParser.formatToman(dueMinor)} تومان) ثبت شد؛ به محض دریافت پیامک واریز یا استعلام سرور، خودکار تطبیق و تأیید می‌شود."
+                    ForwardWorker.runSweepNow(appContext)
+                }
+            }
+        }
+    }
+
+    fun removeInvoice(publicId: String) {
+        viewModelScope.launch {
+            logDao.deleteInvoiceByPublicId(publicId)
+            _snackbarMessage.value = "فاکتور $publicId حذف شد."
+        }
+    }
+
+    fun markDepositAsPersonalIgnored(record: SmsRecord) {
+        viewModelScope.launch {
+            logDao.update(
+                record.copy(
+                    status = SmsStatus.IGNORED.name,
+                    reason = "personal_unrelated",
+                    decidedMs = System.currentTimeMillis(),
+                    lastError = "واریز شخصی / متفرقه (توسط کاربر از صف تطبیق خارج شد)"
+                )
+            )
+            _snackbarMessage.value = "این واریز به عنوان «واریز شخصی / غیرمرتبط» علامت‌گذاری شد."
         }
     }
 
