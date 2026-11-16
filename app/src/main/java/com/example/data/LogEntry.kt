@@ -35,7 +35,9 @@ data class PendingInvoiceEntity(
     val syncedAtMs: Long = System.currentTimeMillis(), // زمان دریافت استعلام از سرور
     val early: Boolean = false,
     val status: String = "WAITING", // "WAITING" | "MATCHED" | "EXPIRED"
-    val matchedSmsId: Long? = null
+    val matchedSmsId: Long? = null,
+    val matchedAtMs: Long? = null, // زمان تأیید و ثبت نهایی فاکتور
+    val bankTitle: String? = null  // نام بانک واریزکننده برای نمایش در لیست فاکتورها
 )
 
 @Entity(
@@ -60,7 +62,8 @@ data class SmsRecord(
     val decidedMs: Long? = null,
     val attempts: Int = 0,
     val httpCode: Int? = null,
-    val lastError: String? = null
+    val lastError: String? = null,
+    val nextRetryAtMs: Long? = null
 ) {
     val statusEnum: SmsStatus
         get() = runCatching { SmsStatus.valueOf(status) }.getOrDefault(SmsStatus.NEW)
@@ -74,3 +77,17 @@ data class SmsRecord(
         }
     }
 }
+
+@Entity(
+    tableName = "retry_attempt_events",
+    indices = [Index(value = ["attemptedAtMs"]), Index(value = ["smsRecordId"])]
+)
+data class RetryAttemptEventEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val smsRecordId: Long,
+    val attemptedAtMs: Long = System.currentTimeMillis(),
+    val succeeded: Boolean,
+    val httpCode: Int? = null,
+    val isAutoRetry: Boolean = true
+)

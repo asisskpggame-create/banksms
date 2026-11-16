@@ -94,13 +94,18 @@ import com.example.data.RegisteredBankCard
 import com.example.data.SmsParser
 import com.example.ui.components.AsisMotion
 
-private val MirzaDarkBg = Color(0xFF141821)
-private val MirzaCardBg = Color(0xFF1E2430)
-private val MirzaInputBg = Color(0xFF181D27)
-private val MirzaBorder = Color(0xFF2D3545)
+private val MirzaDarkBg: Color
+    @Composable get() = MaterialTheme.colorScheme.background
+private val MirzaCardBg: Color
+    @Composable get() = MaterialTheme.colorScheme.surfaceContainer
+private val MirzaInputBg: Color
+    @Composable get() = MaterialTheme.colorScheme.surfaceContainerLow
+private val MirzaBorder: Color
+    @Composable get() = MaterialTheme.colorScheme.outlineVariant
 private val MirzaGreen = Color(0xFF38D373)
 private val MirzaMutedText = Color(0xFF8E98A8)
-private val MirzaAddPillBg = Color(0xFF182C49)
+private val MirzaAddPillBg: Color
+    @Composable get() = MaterialTheme.colorScheme.secondaryContainer
 private val MirzaAddPillText = Color(0xFF5392F7)
 
 @Composable
@@ -1052,8 +1057,8 @@ private fun ReceivedSendersDialog(
         ) {
             Surface(
                 shape = RoundedCornerShape(24.dp),
-                color = Color(0xFF161B26),
-                border = BorderStroke(1.dp, Color(0xFF2B3548)),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 shadowElevation = 18.dp,
                 modifier = Modifier
                     .fillMaxWidth(0.93f)
@@ -1114,10 +1119,10 @@ private fun ReceivedSendersDialog(
                         .padding(horizontal = 18.dp)
                         .height(48.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(Color(0xFF0F141D))
+                        .background(MaterialTheme.colorScheme.background)
                         .border(
                             width = 1.dp,
-                            color = if (searchQuery.isNotEmpty()) MirzaGreen.copy(alpha = 0.65f) else Color(0xFF283246),
+                            color = if (searchQuery.isNotEmpty()) MirzaGreen.copy(alpha = 0.65f) else MaterialTheme.colorScheme.outlineVariant,
                             shape = RoundedCornerShape(14.dp)
                         )
                         .padding(horizontal = 14.dp),
@@ -1206,10 +1211,10 @@ private fun ReceivedSendersDialog(
                         val selected = filterMode == mode
                         Surface(
                             shape = RoundedCornerShape(10.dp),
-                            color = if (selected) MirzaGreen.copy(alpha = 0.16f) else Color(0xFF1D2433),
+                            color = if (selected) MirzaGreen.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceContainer,
                             border = BorderStroke(
                                 1.dp,
-                                if (selected) MirzaGreen.copy(alpha = 0.55f) else Color(0xFF2B3548)
+                                if (selected) MirzaGreen.copy(alpha = 0.55f) else MaterialTheme.colorScheme.outlineVariant
                             ),
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
@@ -1233,7 +1238,7 @@ private fun ReceivedSendersDialog(
 
                 HorizontalDivider(
                     thickness = 1.dp,
-                    color = Color(0xFF252E40)
+                    color = MaterialTheme.colorScheme.outlineVariant
                 )
 
                 // 4. Senders List or Empty Search State
@@ -1328,16 +1333,16 @@ private fun ReceivedSendersDialog(
                                 Surface(
                                     shape = RoundedCornerShape(16.dp),
                                     color = when {
-                                        isAlreadyRegistered -> Color(0xFF1A202C).copy(alpha = 0.65f)
-                                        isRecognizedBank -> Color(0xFF1E293B)
-                                        else -> Color(0xFF1A2130)
+                                        isAlreadyRegistered -> MaterialTheme.colorScheme.surfaceContainerLow
+                                        isRecognizedBank -> MaterialTheme.colorScheme.surfaceContainerHigh
+                                        else -> MaterialTheme.colorScheme.surfaceContainer
                                     },
                                     border = BorderStroke(
                                         width = 1.dp,
                                         color = when {
                                             isAlreadyRegistered -> Color(0xFFFBBF24).copy(alpha = 0.28f)
                                             isRecognizedBank -> MirzaGreen.copy(alpha = 0.35f)
-                                            else -> Color(0xFF283246)
+                                            else -> MaterialTheme.colorScheme.outlineVariant
                                         }
                                     ),
                                     modifier = Modifier

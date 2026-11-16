@@ -17,6 +17,28 @@ data class RegisteredBankCard(
     val senderNumber: String
 )
 
+enum class AppThemeMode(
+    val storageKey: String,
+    val titleFa: String,
+    val subtitleFa: String
+) {
+    DARK_NAVY(
+        storageKey = "dark_navy",
+        titleFa = "سرمه‌ای تیره",
+        subtitleFa = "پالت استاندارد با عمق رنگی متعادل"
+    ),
+    MIDNIGHT_OLED(
+        storageKey = "midnight_oled",
+        titleFa = "مشکی خالص (Midnight OLED)",
+        subtitleFa = "پس‌زمینهٔ #000000 برای کاهش مصرف باتری در نمایشگرهای AMOLED"
+    );
+
+    companion object {
+        fun fromStorageKey(key: String?): AppThemeMode =
+            entries.firstOrNull { it.storageKey.equals(key, ignoreCase = true) } ?: DARK_NAVY
+    }
+}
+
 data class GatewaySettings(
     val endpointUrl: String = "",
     val gatewayToken: String = "",
@@ -33,8 +55,22 @@ data class GatewaySettings(
     val notifyOnServerConnectionError: Boolean = true,
     val notifyOnSensitiveBankSms: Boolean = true,
     val notifyOnAmbiguousOrManual: Boolean = true,
-    val sensitiveSmsMinToman: Long = DEFAULT_SENSITIVE_SMS_MIN_TOMAN
+    val notifyOnApprovedInvoice: Boolean = true,
+    val sensitiveSmsMinToman: Long = DEFAULT_SENSITIVE_SMS_MIN_TOMAN,
+    val themeMode: AppThemeMode = AppThemeMode.DARK_NAVY,
+    val customFilterRulesEnabled: Boolean = true,
+    val customFilterRules: List<CustomFilterRule> = emptyList(),
+    val blockedByCustomFiltersCount: Long = 0L,
+    val autoSyncAfterErrors: Boolean = true,
+    val lastErrorRecoverySyncAtMs: Long? = null,
+    val lastErrorRecoverySyncedCount: Int = 0,
+    val autoClearOldLogsEnabled: Boolean = false,
+    val lastAutoLogCleanupAtMs: Long? = null,
+    val lastAutoLogClearedCount: Int = 0
 ) {
+    val isMidnightOled: Boolean
+        get() = themeMode == AppThemeMode.MIDNIGHT_OLED
+
     val isConfigured: Boolean
         get() = endpointUrl.startsWith("https://", ignoreCase = true) && gatewayToken.trim().length >= 20
 
@@ -75,6 +111,8 @@ data class GatewaySettings(
 
     companion object {
         const val DEFAULT_SENSITIVE_SMS_MIN_TOMAN = 5_000_000L
+        const val AUTO_CLEAR_LOGS_DAYS = 15L
+        const val DEFAULT_KEEP_LOGS_DAYS = 30L
 
         val DEFAULT_REGISTERED_BANK_CARDS: List<RegisteredBankCard> = listOf(
             RegisteredBankCard(
@@ -193,14 +231,69 @@ class SettingsRepo private constructor(context: Context) {
                 notifyOnServerConnectionError = prefs.getBoolean(KEY_NOTIFY_SERVER_ERROR, true),
                 notifyOnSensitiveBankSms = prefs.getBoolean(KEY_NOTIFY_SENSITIVE_SMS, true),
                 notifyOnAmbiguousOrManual = prefs.getBoolean(KEY_NOTIFY_AMBIGUOUS_MANUAL, true),
+                notifyOnApprovedInvoice = prefs.getBoolean(KEY_NOTIFY_APPROVED_INVOICE, true),
                 sensitiveSmsMinToman = prefs.getLong(
                     KEY_SENSITIVE_SMS_MIN_TOMAN,
                     GatewaySettings.DEFAULT_SENSITIVE_SMS_MIN_TOMAN
-                )
+                ),
+                themeMode = AppThemeMode.fromStorageKey(prefs.getString(KEY_THEME_MODE, null)),
+                customFilterRulesEnabled = prefs.getBoolean(KEY_CUSTOM_FILTERS_ENABLED, true),
+                customFilterRules = parseCustomFilterRules(prefs.getString(KEY_CUSTOM_FILTER_RULES, null)),
+                blockedByCustomFiltersCount = prefs.getLong(KEY_BLOCKED_BY_CUSTOM_FILTERS, 0L),
+                autoSyncAfterErrors = prefs.getBoolean(KEY_AUTO_SYNC_AFTER_ERRORS, true),
+                lastErrorRecoverySyncAtMs = prefs.getLong(KEY_LAST_RECOVERY_SYNC_AT_MS, -1L).takeIf { it > 0L },
+                lastErrorRecoverySyncedCount = prefs.getInt(KEY_LAST_RECOVERY_SYNC_COUNT, 0),
+                autoClearOldLogsEnabled = prefs.getBoolean(KEY_AUTO_CLEAR_OLD_LOGS, false),
+                lastAutoLogCleanupAtMs = prefs.getLong(KEY_LAST_LOG_CLEANUP_AT_MS, -1L).takeIf { it > 0L },
+                lastAutoLogClearedCount = prefs.getInt(KEY_LAST_LOG_CLEANUP_COUNT, 0)
             )
         } catch (_: Throwable) {
             GatewaySettings(selectedBankCodes = defaultBanks)
         }
+    }
+
+    private fun parseCustomFilterRules(rawJson: String?): List<CustomFilterRule> {
+        if (rawJson.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(rawJson)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val pattern = obj.optString("pattern").trim()
+                    if (pattern.isEmpty()) continue
+                    add(
+                        CustomFilterRule(
+                            id = obj.optString("id").ifBlank { "rule_$i" },
+                            name = obj.optString("name").trim(),
+                            pattern = pattern,
+                            target = FilterTarget.fromStorageKey(obj.optString("target")),
+                            action = FilterAction.fromStorageKey(obj.optString("action")),
+                            enabled = obj.optBoolean("enabled", true),
+                            hitCount = obj.optLong("hitCount", 0L),
+                            createdAtMs = obj.optLong("createdAtMs", 0L)
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun serializeCustomFilterRules(rules: List<CustomFilterRule>): String {
+        val arr = JSONArray()
+        for (r in rules) {
+            arr.put(
+                JSONObject()
+                    .put("id", r.id)
+                    .put("name", r.name)
+                    .put("pattern", r.pattern)
+                    .put("target", r.target.storageKey)
+                    .put("action", r.action.storageKey)
+                    .put("enabled", r.enabled)
+                    .put("hitCount", r.hitCount)
+                    .put("createdAtMs", r.createdAtMs)
+            )
+        }
+        return arr.toString()
     }
 
     fun addRegisteredBankCard(bankCode: String, bankTitle: String, senderNumber: String): RegisteredBankCard {
@@ -314,6 +407,103 @@ class SettingsRepo private constructor(context: Context) {
         _settingsFlow.value = readSettings()
     }
 
+    fun setThemeMode(mode: AppThemeMode) {
+        safeEdit { putString(KEY_THEME_MODE, mode.storageKey) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun setMidnightOledEnabled(enabled: Boolean) {
+        setThemeMode(if (enabled) AppThemeMode.MIDNIGHT_OLED else AppThemeMode.DARK_NAVY)
+    }
+
+    fun setCustomFilterRulesEnabled(enabled: Boolean) {
+        safeEdit { putBoolean(KEY_CUSTOM_FILTERS_ENABLED, enabled) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun addCustomFilterRule(
+        name: String,
+        pattern: String,
+        target: FilterTarget,
+        action: FilterAction
+    ): CustomFilterRule? {
+        val cleanPattern = pattern.trim()
+        if (cleanPattern.isEmpty()) return null
+        val cleanName = name.trim()
+        val existing = readSettings().customFilterRules.toMutableList()
+        val newRule = CustomFilterRule(
+            id = "flt_${System.currentTimeMillis()}_${existing.size}",
+            name = cleanName,
+            pattern = cleanPattern,
+            target = target,
+            action = action,
+            enabled = true,
+            hitCount = 0L,
+            createdAtMs = System.currentTimeMillis()
+        )
+        existing.add(0, newRule)
+        safeEdit { putString(KEY_CUSTOM_FILTER_RULES, serializeCustomFilterRules(existing)) }
+        _settingsFlow.value = readSettings()
+        return newRule
+    }
+
+    fun toggleCustomFilterRule(ruleId: String) {
+        val updated = readSettings().customFilterRules.map { rule ->
+            if (rule.id == ruleId) rule.copy(enabled = !rule.enabled) else rule
+        }
+        safeEdit { putString(KEY_CUSTOM_FILTER_RULES, serializeCustomFilterRules(updated)) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun removeCustomFilterRule(ruleId: String) {
+        val updated = readSettings().customFilterRules.filterNot { it.id == ruleId }
+        safeEdit { putString(KEY_CUSTOM_FILTER_RULES, serializeCustomFilterRules(updated)) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun recordCustomFilterBlocked(ruleId: String) {
+        val current = readSettings()
+        val updatedRules = current.customFilterRules.map { rule ->
+            if (rule.id == ruleId) rule.copy(hitCount = rule.hitCount + 1L) else rule
+        }
+        safeEdit {
+            putString(KEY_CUSTOM_FILTER_RULES, serializeCustomFilterRules(updatedRules))
+            putLong(KEY_BLOCKED_BY_CUSTOM_FILTERS, current.blockedByCustomFiltersCount + 1L)
+        }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun setAutoSyncAfterErrors(enabled: Boolean) {
+        safeEdit { putBoolean(KEY_AUTO_SYNC_AFTER_ERRORS, enabled) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun recordErrorRecoverySync(syncedCount: Int, atMs: Long = System.currentTimeMillis()) {
+        safeEdit {
+            putLong(KEY_LAST_RECOVERY_SYNC_AT_MS, atMs)
+            putInt(KEY_LAST_RECOVERY_SYNC_COUNT, syncedCount.coerceAtLeast(0))
+        }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun setNotifyOnApprovedInvoice(enabled: Boolean) {
+        safeEdit { putBoolean(KEY_NOTIFY_APPROVED_INVOICE, enabled) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun setAutoClearOldLogsEnabled(enabled: Boolean) {
+        safeEdit { putBoolean(KEY_AUTO_CLEAR_OLD_LOGS, enabled) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun recordAutoLogCleanup(clearedCount: Int, atMs: Long = System.currentTimeMillis()) {
+        safeEdit {
+            putLong(KEY_LAST_LOG_CLEANUP_AT_MS, atMs)
+            putInt(KEY_LAST_LOG_CLEANUP_COUNT, clearedCount.coerceAtLeast(0))
+        }
+        _settingsFlow.value = readSettings()
+    }
+
     fun shouldProcessBank(senderOrBankCode: String, body: String): Boolean {
         val current = readSettings()
         if (!current.filterBanksEnabled) return true
@@ -338,7 +528,18 @@ class SettingsRepo private constructor(context: Context) {
         private const val KEY_NOTIFY_SERVER_ERROR = "notify_server_error"
         private const val KEY_NOTIFY_SENSITIVE_SMS = "notify_sensitive_sms"
         private const val KEY_NOTIFY_AMBIGUOUS_MANUAL = "notify_ambiguous_manual"
+        private const val KEY_NOTIFY_APPROVED_INVOICE = "notify_approved_invoice"
         private const val KEY_SENSITIVE_SMS_MIN_TOMAN = "sensitive_sms_min_toman"
+        private const val KEY_THEME_MODE = "app_theme_mode"
+        private const val KEY_CUSTOM_FILTERS_ENABLED = "custom_filters_enabled"
+        private const val KEY_CUSTOM_FILTER_RULES = "custom_filter_rules_json"
+        private const val KEY_BLOCKED_BY_CUSTOM_FILTERS = "blocked_by_custom_filters_count"
+        private const val KEY_AUTO_SYNC_AFTER_ERRORS = "auto_sync_after_errors"
+        private const val KEY_LAST_RECOVERY_SYNC_AT_MS = "last_recovery_sync_at_ms"
+        private const val KEY_LAST_RECOVERY_SYNC_COUNT = "last_recovery_sync_count"
+        private const val KEY_AUTO_CLEAR_OLD_LOGS = "auto_clear_old_logs_enabled"
+        private const val KEY_LAST_LOG_CLEANUP_AT_MS = "last_log_cleanup_at_ms"
+        private const val KEY_LAST_LOG_CLEANUP_COUNT = "last_log_cleanup_count"
 
         @Volatile
         private var INSTANCE: SettingsRepo? = null

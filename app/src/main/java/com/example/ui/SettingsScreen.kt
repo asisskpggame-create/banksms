@@ -13,7 +13,11 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,11 +28,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BatterySaver
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Contrast
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Link
@@ -43,6 +51,7 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -59,6 +68,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -68,14 +79,24 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.data.AppThemeMode
+import com.example.data.FilterAction
+import com.example.data.FilterTarget
 import com.example.data.GatewaySettings
 import com.example.data.SmsParser
 import com.example.network.GatewayApiClient
+import com.example.network.PostErrorSyncState
 import com.example.ui.components.AsisElevatedCard
 import com.example.ui.components.AsisMotion
+import com.example.ui.components.CustomFilterRulesCard
 import com.example.ui.components.NotificationSettingsPanelCard
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusPill
+import com.example.ui.components.StorageOptimizationCard
+import com.example.ui.theme.AsisCardDark
+import com.example.ui.theme.AsisNavyDark
+import com.example.ui.theme.AsisOledBlack
+import com.example.ui.theme.AsisOledCard
 
 @Composable
 fun SettingsScreen(
@@ -91,8 +112,21 @@ fun SettingsScreen(
     onToggleNotifyServerError: (Boolean) -> Unit = {},
     onToggleNotifySensitiveSms: (Boolean) -> Unit = {},
     onToggleNotifyAmbiguousManual: (Boolean) -> Unit = {},
+    onToggleNotifyApprovedInvoice: (Boolean) -> Unit = {},
     onUpdateSensitiveSmsMinToman: (Long) -> Unit = {},
     onSendTestNotification: () -> Unit = {},
+    onSelectThemeMode: (AppThemeMode) -> Unit = {},
+    onToggleCustomFiltersEnabled: (Boolean) -> Unit = {},
+    onAddCustomFilterRule: (name: String, pattern: String, target: FilterTarget, action: FilterAction) -> Unit = { _, _, _, _ -> },
+    onToggleCustomFilterRule: (ruleId: String) -> Unit = {},
+    onRemoveCustomFilterRule: (ruleId: String) -> Unit = {},
+    postErrorSyncState: PostErrorSyncState = PostErrorSyncState(),
+    onToggleAutoSyncAfterErrors: (Boolean) -> Unit = {},
+    onSyncAfterErrorsNow: () -> Unit = {},
+    totalLogsCount: Int = 0,
+    oldLogs15DaysCount: Int = 0,
+    onToggleAutoClearOldLogs: (Boolean) -> Unit = {},
+    onClearOldLogsNow: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var endpointInput by rememberSaveable { mutableStateOf(settings.endpointUrl) }
@@ -177,6 +211,12 @@ fun SettingsScreen(
             }
         }
 
+        // Theme & AMOLED Battery-Saver Mode Card
+        ThemeAppearanceCard(
+            currentMode = settings.themeMode,
+            onSelectMode = onSelectThemeMode
+        )
+
         // App-Side Approval Controls Card
         AsisElevatedCard {
             Row(
@@ -241,8 +281,27 @@ fun SettingsScreen(
             onToggleNotifyServerError = onToggleNotifyServerError,
             onToggleNotifySensitiveSms = onToggleNotifySensitiveSms,
             onToggleNotifyAmbiguousManual = onToggleNotifyAmbiguousManual,
+            onToggleNotifyApprovedInvoice = onToggleNotifyApprovedInvoice,
             onUpdateSensitiveSmsMinToman = onUpdateSensitiveSmsMinToman,
             onSendTestNotification = onSendTestNotification
+        )
+
+        // Local Storage Optimization: Automatic 15-Day Log Cleanup
+        StorageOptimizationCard(
+            settings = settings,
+            totalLogsCount = totalLogsCount,
+            oldLogs15DaysCount = oldLogs15DaysCount,
+            onToggleAutoClearOldLogs = onToggleAutoClearOldLogs,
+            onClearOldLogsNow = onClearOldLogsNow
+        )
+
+        // Custom SMS Filtering Rules Card (reduces unnecessary server load)
+        CustomFilterRulesCard(
+            settings = settings,
+            onToggleMasterEnabled = onToggleCustomFiltersEnabled,
+            onAddRule = onAddCustomFilterRule,
+            onToggleRule = onToggleCustomFilterRule,
+            onRemoveRule = onRemoveCustomFilterRule
         )
 
         // Endpoint & Token Configuration Card
@@ -447,6 +506,98 @@ fun SettingsScreen(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("تست pending", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = "همگام‌سازی خودکار اتصال بعد از خطاها",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "به‌محض بازگشت اینترنت، رفع خطای سرور یا اصلاح توکن، صف خطاها بدون انتظار صف Backoff ارسال می‌شوند.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Switch(
+                    checked = settings.autoSyncAfterErrors,
+                    onCheckedChange = onToggleAutoSyncAfterErrors,
+                    modifier = Modifier.testTag("auto_sync_after_errors_switch")
+                )
+            }
+
+            if (settings.lastErrorRecoverySyncAtMs != null && settings.lastErrorRecoverySyncedCount > 0) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "آخرین بازیابی پس از خطا: ${settings.lastErrorRecoverySyncedCount} پیامک با موفقیت همگام‌سازی شد",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+
+            OutlinedButton(
+                onClick = onSyncAfterErrorsNow,
+                enabled = !postErrorSyncState.isSyncing,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("sync_after_errors_now_button"),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                if (postErrorSyncState.isSyncing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Sync,
+                        contentDescription = "همگام‌سازی اتصال بعد از خطاها",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (postErrorSyncState.isSyncing) {
+                        "در حال همگام‌سازی اتصال پس از خطا..."
+                    } else {
+                        "همگام‌سازی اتصال بعد از خطاها"
+                    },
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
 
@@ -656,5 +807,214 @@ private fun TestConnectionResultBanner(testConnectionState: TestConnectionUiStat
 
         TestConnectionUiState.Idle -> Unit
     }
+    }
+}
+
+@Composable
+private fun ThemeAppearanceCard(
+    currentMode: AppThemeMode,
+    onSelectMode: (AppThemeMode) -> Unit
+) {
+    val isOled = currentMode == AppThemeMode.MIDNIGHT_OLED
+
+    AsisElevatedCard(
+        modifier = Modifier
+            .animateContentSize(animationSpec = AsisMotion.smoothSpring())
+            .testTag("theme_appearance_card"),
+        borderColor = if (isOled) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.42f)
+        } else {
+            MaterialTheme.colorScheme.outlineVariant
+        }
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(modifier = Modifier.weight(1f)) {
+                SectionHeader(
+                    icon = if (isOled) Icons.Default.BatterySaver else Icons.Default.DarkMode,
+                    title = "حالت نمایش و صرفه‌جویی AMOLED",
+                    subtitle = if (isOled) {
+                        "فعال: مشکی خالص (#000000) با خاموش کردن پیکسل‌های صفحه"
+                    } else {
+                        "حالت استاندارد: سرمه‌ای تیره با عمق رنگی متعادل"
+                    }
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Switch(
+                checked = isOled,
+                onCheckedChange = { enabled ->
+                    onSelectMode(if (enabled) AppThemeMode.MIDNIGHT_OLED else AppThemeMode.DARK_NAVY)
+                },
+                modifier = Modifier.testTag("midnight_oled_switch")
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            ThemePreviewOptionCard(
+                mode = AppThemeMode.DARK_NAVY,
+                selected = currentMode == AppThemeMode.DARK_NAVY,
+                bgPreview = AsisNavyDark,
+                cardPreview = AsisCardDark,
+                badgeText = "استاندارد",
+                onClick = { onSelectMode(AppThemeMode.DARK_NAVY) },
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("theme_option_dark_navy")
+            )
+            ThemePreviewOptionCard(
+                mode = AppThemeMode.MIDNIGHT_OLED,
+                selected = currentMode == AppThemeMode.MIDNIGHT_OLED,
+                bgPreview = AsisOledBlack,
+                cardPreview = AsisOledCard,
+                badgeText = "#000000 OLED",
+                onClick = { onSelectMode(AppThemeMode.MIDNIGHT_OLED) },
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("theme_option_midnight_oled")
+            )
+        }
+
+        AnimatedVisibility(
+            visible = isOled,
+            enter = fadeIn(tween(200)) + expandVertically(animationSpec = AsisMotion.smoothSpring()),
+            exit = fadeOut(tween(150)) + shrinkVertically(animationSpec = AsisMotion.smoothSpring())
+        ) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Contrast,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "حالت Midnight Black فعال است؛ در نمایشگرهای OLED/AMOLED پیکسل‌های مشکی خاموش می‌شوند تا مصرف باتری کاهش یابد.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemePreviewOptionCard(
+    mode: AppThemeMode,
+    selected: Boolean,
+    bgPreview: Color,
+    cardPreview: Color,
+    badgeText: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val accent = MaterialTheme.colorScheme.primary
+    val borderColor = if (selected) accent else MaterialTheme.colorScheme.outlineVariant
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(if (selected) 1.6.dp else 1.dp, borderColor),
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Miniature UI Swatch Preview
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(54.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(bgPreview)
+                    .border(1.dp, borderColor.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                    .padding(8.dp)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(28.dp)
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(accent)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(7.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.secondary)
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(20.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(cardPreview)
+                            .border(0.8.dp, borderColor.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = mode.titleFa,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    color = if (selected) accent else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (selected) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = "انتخاب شده",
+                        tint = accent,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = badgeText,
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                color = if (selected) accent else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }

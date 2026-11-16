@@ -9,6 +9,13 @@ val AsisCardDark = Color(0xFF1D2331)
 val AsisCardElevatedDark = Color(0xFF242C3D)
 val AsisBorderDark = Color(0xFF2D364B)
 
+// Midnight Black (AMOLED Battery-Saver) Palette — Pure #000000 pixels-off base
+val AsisOledBlack = Color(0xFF000000)
+val AsisOledSurface = Color(0xFF050507)
+val AsisOledCard = Color(0xFF0A0A0D)
+val AsisOledCardElevated = Color(0xFF121318)
+val AsisOledBorder = Color(0xFF1E222B)
+
 val AsisEmerald = Color(0xFF38D373)
 val AsisEmeraldLight = Color(0xFF6EE7B7)
 val AsisEmeraldContainer = Color(0xFF0A3F28)

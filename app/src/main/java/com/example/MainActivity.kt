@@ -128,12 +128,14 @@ class MainActivity : ComponentActivity() {
         runCatching { InternetWatchService.register(this) }
         enableEdgeToEdge()
         setContent {
-            MyApplicationTheme {
+            val vmFactory = remember(application) {
+                AsisViewModel.provideFactory(application)
+            }
+            val asisViewModel: AsisViewModel = viewModel(factory = vmFactory)
+            val settings by asisViewModel.settingsState.collectAsStateWithLifecycle()
+
+            MyApplicationTheme(themeMode = settings.themeMode) {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                    val vmFactory = remember(application) {
-                        AsisViewModel.provideFactory(application)
-                    }
-                    val asisViewModel: AsisViewModel = viewModel(factory = vmFactory)
                     AsisAppScreen(asisViewModel = asisViewModel)
                 }
             }
@@ -164,6 +166,11 @@ fun AsisAppScreen(
     val lastSentLog by asisViewModel.lastSentLog.collectAsStateWithLifecycle()
     val testConnectionState by asisViewModel.testConnectionState.collectAsStateWithLifecycle()
     val snackbarMessage by asisViewModel.snackbarMessage.collectAsStateWithLifecycle()
+    val batchRetryState by asisViewModel.batchRetryState.collectAsStateWithLifecycle()
+    val postErrorSyncState by asisViewModel.postErrorSyncState.collectAsStateWithLifecycle()
+    val retryHealthSummary by asisViewModel.retryHealthSummary.collectAsStateWithLifecycle()
+    val totalLogsCount by asisViewModel.totalLogsCount.collectAsStateWithLifecycle()
+    val oldLogs15DaysCount by asisViewModel.oldLogs15DaysCount.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -388,10 +395,10 @@ fun AsisAppScreen(
                         Column {
                             HorizontalDivider(
                                 thickness = 1.dp,
-                                color = Color(0xFF2D3545)
+                                color = MaterialTheme.colorScheme.outlineVariant
                             )
                             NavigationBar(
-                                containerColor = Color(0xFF141821),
+                                containerColor = MaterialTheme.colorScheme.surface,
                                 tonalElevation = 0.dp,
                                 windowInsets = WindowInsets.navigationBars
                             ) {
@@ -405,11 +412,11 @@ fun AsisAppScreen(
                                         onClick = { currentTab = tab },
                                         modifier = Modifier.testTag("nav_tab_${tab.route}"),
                                         colors = NavigationBarItemDefaults.colors(
-                                            selectedIconColor = Color(0xFF3B82F6),
-                                            selectedTextColor = Color(0xFF3B82F6),
-                                            indicatorColor = Color(0xFF3B82F6).copy(alpha = 0.14f),
-                                            unselectedIconColor = Color(0xFF8E98A8),
-                                            unselectedTextColor = Color(0xFF8E98A8)
+                                            selectedIconColor = MaterialTheme.colorScheme.secondary,
+                                            selectedTextColor = MaterialTheme.colorScheme.secondary,
+                                            indicatorColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f),
+                                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                                         ),
                                         icon = {
                                             NavTabIcon(
@@ -438,11 +445,11 @@ fun AsisAppScreen(
                                         onClick = { currentTab = tab },
                                         modifier = Modifier.testTag("nav_tab_${tab.route}"),
                                         colors = NavigationBarItemDefaults.colors(
-                                            selectedIconColor = Color(0xFF3B82F6),
-                                            selectedTextColor = Color(0xFF3B82F6),
-                                            indicatorColor = Color(0xFF3B82F6).copy(alpha = 0.14f),
-                                            unselectedIconColor = Color(0xFF8E98A8),
-                                            unselectedTextColor = Color(0xFF8E98A8)
+                                            selectedIconColor = MaterialTheme.colorScheme.secondary,
+                                            selectedTextColor = MaterialTheme.colorScheme.secondary,
+                                            indicatorColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f),
+                                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                                         ),
                                         icon = {
                                             NavTabIcon(
@@ -477,7 +484,7 @@ fun AsisAppScreen(
                         Surface(
                             shape = CircleShape,
                             color = powerColor,
-                            border = BorderStroke(4.dp, Color(0xFF141821)),
+                            border = BorderStroke(4.dp, MaterialTheme.colorScheme.surface),
                             shadowElevation = if (settings.serviceEnabled) 10.dp else 4.dp,
                             modifier = Modifier
                                 .offset(y = (-14).dp)
@@ -586,7 +593,9 @@ fun AsisAppScreen(
                                     settings = settings,
                                     isOnline = isOnline,
                                     serverStatus = serverStatus,
+                                    postErrorSyncState = postErrorSyncState,
                                     onCheckServerConnection = asisViewModel::checkServerConnectionNow,
+                                    onSyncAfterErrors = { asisViewModel.syncConnectionAfterErrors() },
                                     hasSmsPermissions = hasSmsPermissions,
                                     hasNotificationPermission = hasNotificationPermission,
                                     isIgnoringBatteryOptimizations = isIgnoringBatteryOptimizations,
@@ -612,11 +621,19 @@ fun AsisAppScreen(
 
                             AsisTab.LOGS -> LogsScreen(
                                 logs = allLogs,
+                                invoices = allInvoices,
                                 onApproveManually = asisViewModel::approveRecordManually,
                                 onRetrySingle = asisViewModel::retrySingleLog,
                                 onRetryAllFailed = asisViewModel::retryAllFailedLogs,
                                 onClearAllLogs = asisViewModel::clearAllLogs,
-                                onMarkAsPersonal = asisViewModel::markDepositAsPersonalIgnored
+                                onMarkAsPersonal = asisViewModel::markDepositAsPersonalIgnored,
+                                batchRetryState = batchRetryState,
+                                postErrorSyncState = postErrorSyncState,
+                                autoSyncAfterErrors = settings.autoSyncAfterErrors,
+                                retryHealthSummary = retryHealthSummary,
+                                isOnline = isOnline,
+                                isServerConfigured = settings.isConfigured,
+                                onRetrySelectedBatch = asisViewModel::retrySelectedFailedBatch
                             )
 
                             AsisTab.BANKS -> BanksScreen(
@@ -642,8 +659,26 @@ fun AsisAppScreen(
                                 onToggleNotifyServerError = asisViewModel::setNotifyOnServerConnectionError,
                                 onToggleNotifySensitiveSms = asisViewModel::setNotifyOnSensitiveBankSms,
                                 onToggleNotifyAmbiguousManual = asisViewModel::setNotifyOnAmbiguousOrManual,
+                                onToggleNotifyApprovedInvoice = asisViewModel::setNotifyOnApprovedInvoice,
                                 onUpdateSensitiveSmsMinToman = asisViewModel::setSensitiveSmsMinToman,
-                                onSendTestNotification = asisViewModel::sendTestPushNotification
+                                onSendTestNotification = asisViewModel::sendTestPushNotification,
+                                onSelectThemeMode = asisViewModel::setThemeMode,
+                                onToggleCustomFiltersEnabled = asisViewModel::setCustomFilterRulesEnabled,
+                                onAddCustomFilterRule = asisViewModel::addCustomFilterRule,
+                                onToggleCustomFilterRule = asisViewModel::toggleCustomFilterRule,
+                                onRemoveCustomFilterRule = asisViewModel::removeCustomFilterRule,
+                                postErrorSyncState = postErrorSyncState,
+                                onToggleAutoSyncAfterErrors = asisViewModel::setAutoSyncAfterErrors,
+                                onSyncAfterErrorsNow = {
+                                    asisViewModel.syncConnectionAfterErrors(
+                                        includeAuth401 = true,
+                                        reasonFa = "همگام‌سازی دستی از تنظیمات"
+                                    )
+                                },
+                                totalLogsCount = totalLogsCount,
+                                oldLogs15DaysCount = oldLogs15DaysCount,
+                                onToggleAutoClearOldLogs = asisViewModel::setAutoClearOldLogsEnabled,
+                                onClearOldLogsNow = asisViewModel::clearLogsOlderThan15DaysNow
                             )
                         }
                     }

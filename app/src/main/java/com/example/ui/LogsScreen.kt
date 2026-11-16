@@ -75,11 +75,20 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.data.PendingInvoiceEntity
 import com.example.data.SmsParser
 import com.example.data.SmsRecord
 import com.example.data.SmsStatus
+import com.example.network.BatchRetryPolicy
+import com.example.network.BatchRetryState
+import com.example.network.PostErrorSyncState
+import com.example.network.RetryHealthAnalytics
+import com.example.network.RetryHealthSummary
+import com.example.ui.components.ApprovedInvoicesLedgerCard
 import com.example.ui.components.AsisMotion
 import com.example.ui.components.AsisSpringModal
+import com.example.ui.components.AutoRetryHealthChartCard
+import com.example.ui.components.RetryPendingSectionCard
 import com.example.ui.components.StatusPill
 
 private enum class LogFilter(val labelFa: String) {
@@ -103,11 +112,19 @@ private fun SmsRecord.hasSendError(): Boolean =
 @Composable
 fun LogsScreen(
     logs: List<SmsRecord>,
+    invoices: List<PendingInvoiceEntity> = emptyList(),
     onApproveManually: (record: SmsRecord, overridePublicId: String?, overrideKind: String?) -> Unit,
     onRetrySingle: (SmsRecord) -> Unit,
     onClearAllLogs: () -> Unit,
     onRetryAllFailed: () -> Unit = {},
     onMarkAsPersonal: (SmsRecord) -> Unit = {},
+    batchRetryState: BatchRetryState = BatchRetryState(),
+    postErrorSyncState: PostErrorSyncState = PostErrorSyncState(),
+    autoSyncAfterErrors: Boolean = true,
+    retryHealthSummary: RetryHealthSummary = RetryHealthAnalytics.compute7DaySummary(emptyList(), emptyList()),
+    isOnline: Boolean = true,
+    isServerConfigured: Boolean = true,
+    onRetrySelectedBatch: (List<Long>) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var selectedFilter by rememberSaveable { mutableStateOf(LogFilter.ALL) }
@@ -117,6 +134,13 @@ fun LogsScreen(
 
     val visibleLogs = remember(logs) {
         logs.filterNot { it.reason == "promo" }
+    }
+
+    val retryPendingLogs by remember(visibleLogs) {
+        derivedStateOf {
+            visibleLogs.filter { BatchRetryPolicy.isEligibleForRetryPending(it) }
+                .sortedWith(compareBy<SmsRecord>({ it.nextRetryAtMs ?: Long.MAX_VALUE }, { it.receivedMs }))
+        }
     }
 
     val errorRecordsCount = remember(visibleLogs) {
@@ -326,6 +350,15 @@ fun LogsScreen(
             }
         }
 
+        val showHealthChart = selectedFilter == LogFilter.ALL ||
+            selectedFilter == LogFilter.FAILED_ERRORS ||
+            selectedFilter == LogFilter.NEW_RETRY
+        val hasApprovedInvoices = remember(invoices) {
+            invoices.any { it.status == "MATCHED" }
+        }
+        val showApprovedLedger = searchQuery.isBlank() &&
+            (selectedFilter == LogFilter.MATCHED || (selectedFilter == LogFilter.ALL && hasApprovedInvoices))
+
         AnimatedContent(
             targetState = filteredLogs.isEmpty(),
             transitionSpec = {
@@ -342,44 +375,78 @@ fun LogsScreen(
             label = "logsListOrEmptyState"
         ) { isEmptyState ->
             if (isEmptyState) {
-                Box(
+                LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp)
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        modifier = Modifier.padding(24.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(72.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Inbox,
-                                contentDescription = "لاگی وجود ندارد",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                modifier = Modifier.size(36.dp)
+                    if (showApprovedLedger) {
+                        item(key = "approved_invoices_ledger_empty") {
+                            ApprovedInvoicesLedgerCard(
+                                invoices = invoices,
+                                modifier = Modifier.animateItem(
+                                    fadeInSpec = tween(220),
+                                    placementSpec = AsisMotion.offsetSpring(),
+                                    fadeOutSpec = tween(160)
+                                )
                             )
                         }
-                        Text(
-                            text = if (searchQuery.isNotBlank()) {
-                                "نتیجه‌ای برای «$searchQuery» پیدا نشد"
-                            } else {
-                                "هیچ رکوردی در این بخش وجود ندارد"
-                            },
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "پیامک‌های بانکی دریافتی پس از پارس شدن با وضعیت‌های NEW، MATCHED، MANUAL، AMBIGUOUS یا IGNORED اینجا نمایش داده می‌شوند.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    }
+                    if (showHealthChart && searchQuery.isBlank()) {
+                        item(key = "retry_health_chart_empty") {
+                            AutoRetryHealthChartCard(
+                                summary = retryHealthSummary,
+                                modifier = Modifier.animateItem(
+                                    fadeInSpec = tween(220),
+                                    placementSpec = AsisMotion.offsetSpring(),
+                                    fadeOutSpec = tween(160)
+                                )
+                            )
+                        }
+                    }
+                    item(key = "empty_logs_placeholder") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 28.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.padding(24.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(72.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Inbox,
+                                        contentDescription = "لاگی وجود ندارد",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        modifier = Modifier.size(36.dp)
+                                    )
+                                }
+                                Text(
+                                    text = if (searchQuery.isNotBlank()) {
+                                        "نتیجه‌ای برای «$searchQuery» پیدا نشد"
+                                    } else {
+                                        "هیچ رکوردی در این بخش وجود ندارد"
+                                    },
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "پیامک‌های بانکی دریافتی پس از پارس شدن با وضعیت‌های NEW، MATCHED، MANUAL، AMBIGUOUS یا IGNORED اینجا نمایش داده می‌شوند.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                 }
             } else {
@@ -390,6 +457,52 @@ fun LogsScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     contentPadding = PaddingValues(bottom = 24.dp)
                 ) {
+                    if (showApprovedLedger) {
+                        item(key = "approved_invoices_ledger") {
+                            ApprovedInvoicesLedgerCard(
+                                invoices = invoices,
+                                modifier = Modifier.animateItem(
+                                    fadeInSpec = tween(220),
+                                    placementSpec = AsisMotion.offsetSpring(),
+                                    fadeOutSpec = tween(160)
+                                )
+                            )
+                        }
+                    }
+
+                    if (showHealthChart && searchQuery.isBlank()) {
+                        item(key = "retry_health_chart") {
+                            AutoRetryHealthChartCard(
+                                summary = retryHealthSummary,
+                                modifier = Modifier.animateItem(
+                                    fadeInSpec = tween(220),
+                                    placementSpec = AsisMotion.offsetSpring(),
+                                    fadeOutSpec = tween(160)
+                                )
+                            )
+                        }
+                    }
+
+                    if (retryPendingLogs.isNotEmpty() && showHealthChart) {
+                        item(key = "retry_pending_panel") {
+                            RetryPendingSectionCard(
+                                retryPendingItems = retryPendingLogs,
+                                batchRetryState = batchRetryState,
+                                postErrorSyncState = postErrorSyncState,
+                                autoSyncAfterErrors = autoSyncAfterErrors,
+                                isOnline = isOnline,
+                                isServerConfigured = isServerConfigured,
+                                onRetrySelectedBatch = onRetrySelectedBatch,
+                                onRetrySingleItem = onRetrySingle,
+                                modifier = Modifier.animateItem(
+                                    fadeInSpec = tween(220),
+                                    placementSpec = AsisMotion.offsetSpring(),
+                                    fadeOutSpec = tween(160)
+                                )
+                            )
+                        }
+                    }
+
                     items(
                         items = filteredLogs,
                         key = { it.id }
@@ -623,10 +736,16 @@ private fun SmsRecordCard(
             }
 
             entry.matchedLabelFa()?.let { label ->
+                val isApproved = entry.statusEnum == SmsStatus.MATCHED
+                val priceText = entry.amountMinor?.let { " • قیمت: ${SmsParser.formatToman(it)} تومان" }.orEmpty()
                 Text(
-                    text = "تطبیق‌یافته با: $label",
+                    text = if (isApproved) {
+                        "ثبت‌شده: $label$priceText"
+                    } else {
+                        "تطبیق‌یافته با: $label"
+                    },
                     style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = if (isApproved) Color(0xFF10B981) else MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Bold
                 )
             }

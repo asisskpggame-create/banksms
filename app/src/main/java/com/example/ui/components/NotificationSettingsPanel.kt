@@ -33,6 +33,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
@@ -81,6 +82,7 @@ fun NotificationSettingsPanelCard(
     onToggleNotifyServerError: (Boolean) -> Unit,
     onToggleNotifySensitiveSms: (Boolean) -> Unit,
     onToggleNotifyAmbiguousManual: (Boolean) -> Unit,
+    onToggleNotifyApprovedInvoice: (Boolean) -> Unit = {},
     onUpdateSensitiveSmsMinToman: (Long) -> Unit,
     onSendTestNotification: () -> Unit,
     modifier: Modifier = Modifier
@@ -101,13 +103,14 @@ fun NotificationSettingsPanelCard(
     val activeAlertsCount = listOf(
         settings.notifyOnServerConnectionError,
         settings.notifyOnSensitiveBankSms,
-        settings.notifyOnAmbiguousOrManual
+        settings.notifyOnAmbiguousOrManual,
+        settings.notifyOnApprovedInvoice
     ).count { it }
 
     val statusColor by animateColorAsState(
         targetValue = when {
             !hasNotificationPermission -> MaterialTheme.colorScheme.error
-            activeAlertsCount == 3 -> Color(0xFF10B981)
+            activeAlertsCount == 4 -> Color(0xFF10B981)
             activeAlertsCount > 0 -> MaterialTheme.colorScheme.primary
             else -> MaterialTheme.colorScheme.outline
         },
@@ -118,7 +121,7 @@ fun NotificationSettingsPanelCard(
     val statusLabel = when {
         !hasNotificationPermission -> "نیاز به مجوز اعلان"
         activeAlertsCount == 0 -> "خاموش"
-        activeAlertsCount == 3 -> "تمام هشدارها فعال"
+        activeAlertsCount == 4 -> "تمام هشدارها فعال"
         else -> "$activeAlertsCount مورد فعال"
     }
 
@@ -346,6 +349,19 @@ fun NotificationSettingsPanelCard(
             checked = settings.notifyOnAmbiguousOrManual,
             onCheckedChange = onToggleNotifyAmbiguousManual,
             switchTestTag = "notify_ambiguous_manual_switch"
+        )
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+
+        // 4. Approved Invoice & Price Push Alerts
+        NotificationToggleRow(
+            icon = Icons.Default.ReceiptLong,
+            iconTint = Color(0xFF10B981),
+            title = "اعلان و اعلام قیمت فاکتورهای تأییدشده",
+            subtitle = "نمایش اعلان لحظه‌ای با شناسه فاکتور و مبلغ دقیق (تومان و ریال) بلافاصله پس از تأیید",
+            checked = settings.notifyOnApprovedInvoice,
+            onCheckedChange = onToggleNotifyApprovedInvoice,
+            switchTestTag = "notify_approved_invoice_switch"
         )
 
         // Instant Push Notification Test Button

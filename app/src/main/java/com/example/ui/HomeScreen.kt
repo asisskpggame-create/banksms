@@ -62,6 +62,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
@@ -101,9 +102,11 @@ import com.example.R
 import com.example.data.GatewaySettings
 import com.example.data.SmsParser
 import com.example.data.SmsRecord
+import com.example.network.PostErrorSyncState
 import com.example.network.ServerConnectionLevel
 import com.example.network.ServerConnectionStatusUi
 import com.example.ui.components.AnimatedSpringCounter
+import com.example.ui.components.ApprovedInvoicesLedgerCard
 import com.example.ui.components.AsisElevatedCard
 import com.example.ui.components.AsisMotion
 import com.example.ui.components.AsisSpringModal
@@ -143,7 +146,9 @@ fun HomeScreen(
         settings = settings,
         telemetry = com.example.network.ServerConnectionTelemetry()
     ),
+    postErrorSyncState: PostErrorSyncState = PostErrorSyncState(),
     onCheckServerConnection: () -> Unit = onFlushQueue,
+    onSyncAfterErrors: () -> Unit = onCheckServerConnection,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -178,10 +183,14 @@ fun HomeScreen(
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Real-time Server Connection Status Widget (Green / Yellow / Red) at top of Home
+        // Real-time Server Connection Status Widget (Green / Yellow / Red) + Post-Error Recovery Sync
         ServerConnectionStatusWidget(
             status = serverStatus,
+            autoSyncAfterErrors = settings.autoSyncAfterErrors,
+            pendingErrorCount = errorLogs.size,
+            postErrorSyncState = postErrorSyncState,
             onRefreshClick = onCheckServerConnection,
+            onSyncAfterErrors = onSyncAfterErrors,
             onOpenSettings = onNavigateToSettings
         )
 
@@ -412,6 +421,11 @@ fun HomeScreen(
             onRemoveInvoice = onRemoveInvoice
         )
 
+        // Registered Approved Invoices & Price Summary Card
+        ApprovedInvoicesLedgerCard(
+            invoices = invoices
+        )
+
         // Last Matched Summary Card
         LastMatchedSummaryCard(
             lastMatchedLog = lastSentLog,
@@ -481,7 +495,11 @@ fun HomeScreen(
 @Composable
 private fun ServerConnectionStatusWidget(
     status: ServerConnectionStatusUi,
+    autoSyncAfterErrors: Boolean,
+    pendingErrorCount: Int,
+    postErrorSyncState: PostErrorSyncState,
     onRefreshClick: () -> Unit,
+    onSyncAfterErrors: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
     val greenColor = Color(0xFF10B981)
@@ -721,6 +739,91 @@ private fun ServerConnectionStatusWidget(
                                     .size(16.dp)
                                     .rotate(spinAngle)
                             )
+                        }
+                    }
+                }
+            }
+
+            // Post-Error Recovery Sync Strip
+            val showRecoveryStrip = postErrorSyncState.isSyncing ||
+                pendingErrorCount > 0 ||
+                postErrorSyncState.lastRecoveryRecoveredCount > 0
+            AnimatedVisibility(
+                visible = showRecoveryStrip,
+                enter = fadeIn(tween(200)) + expandVertically(animationSpec = AsisMotion.smoothSpring()),
+                exit = fadeOut(tween(150)) + shrinkVertically(animationSpec = AsisMotion.smoothSpring())
+            ) {
+                val stripColor = when {
+                    postErrorSyncState.isSyncing -> Color(0xFF06B6D4)
+                    pendingErrorCount > 0 -> yellowColor
+                    else -> greenColor
+                }
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color.White.copy(alpha = 0.06f),
+                    border = BorderStroke(1.dp, stripColor.copy(alpha = 0.35f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("post_error_sync_banner")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Sync,
+                                contentDescription = "همگام‌سازی پس از خطا",
+                                tint = stripColor,
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .rotate(if (postErrorSyncState.isSyncing) spinAngle else 0f)
+                            )
+                            Text(
+                                text = when {
+                                    postErrorSyncState.isSyncing ->
+                                        "در حال همگام‌سازی پس از خطا (${postErrorSyncState.triggerReasonFa ?: "بررسی اتصال"})..."
+                                    pendingErrorCount > 0 && autoSyncAfterErrors ->
+                                        "$pendingErrorCount مورد در انتظار بازیابی • Sync خودکار پس از رفع خطا فعال است"
+                                    pendingErrorCount > 0 ->
+                                        "$pendingErrorCount پیامک با خطای ارسال • نیاز به همگام‌سازی دستی"
+                                    else ->
+                                        "بازیابی خودکار پس از خطا: ${postErrorSyncState.lastRecoveryRecoveredCount} مورد همگام‌سازی شد"
+                                },
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = Color.White.copy(alpha = 0.90f),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        if (pendingErrorCount > 0 && !postErrorSyncState.isSyncing) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            FilledTonalButton(
+                                onClick = onSyncAfterErrors,
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = stripColor.copy(alpha = 0.22f),
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .testTag("sync_after_errors_button")
+                            ) {
+                                Text(
+                                    text = "Sync خطاها",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                 }

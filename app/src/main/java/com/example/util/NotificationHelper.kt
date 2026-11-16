@@ -29,6 +29,7 @@ object NotificationHelper {
     private const val NOTIFICATION_ID_MANUAL_BASE = 6000
     private const val NOTIFICATION_ID_SENSITIVE_SMS_BASE = 7000
     private const val NOTIFICATION_ID_TEST_ALERT = 8000
+    private const val NOTIFICATION_ID_APPROVED_INVOICE_BASE = 9000
 
     private const val SERVER_ERROR_COOLDOWN_MS = 90_000L
 
@@ -291,6 +292,49 @@ object NotificationHelper {
             .build()
 
         postIfPermitted(context, NOTIFICATION_ID_MANUAL_BASE + (depositId % 500).toInt(), notification)
+    }
+
+    fun notifyInvoiceApproved(
+        context: Context,
+        publicId: String,
+        kind: String,
+        amountMinor: Long,
+        bankTitle: String? = null,
+        recordId: Long = 1L
+    ): Boolean {
+        val settings = SettingsRepo.getInstance(context).readSettings()
+        if (!settings.notifyOnApprovedInvoice) return false
+
+        ensureChannel(context)
+        val tomanStr = SmsParser.formatToman(amountMinor)
+        val rialStr = SmsParser.formatRial(amountMinor)
+        val kindLabel = when (kind) {
+            "topup" -> "شارژ کیف پول"
+            "sms-in" -> "تراکنش"
+            else -> "فاکتور"
+        }
+        val cleanBank = bankTitle?.trim()?.takeIf { it.isNotEmpty() }
+        val title = "✅ $kindLabel $publicId تأیید و ثبت شد ($tomanStr تومان)"
+        val msg = buildString {
+            append("قیمت ثبت‌شده: $tomanStr تومان ($rialStr ریال)")
+            if (cleanBank != null) {
+                append(" • $cleanBank")
+            }
+        }
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_asis_shield)
+            .setContentTitle(title)
+            .setContentText(msg)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(msg))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setAutoCancel(true)
+            .setContentIntent(mainActivityPendingIntent(context))
+            .build()
+
+        val safeId = NOTIFICATION_ID_APPROVED_INVOICE_BASE + ((recordId.coerceAtLeast(1L) % 900L).toInt())
+        return postIfPermitted(context, safeId, notification)
     }
 }
 

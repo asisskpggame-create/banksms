@@ -5,8 +5,10 @@ import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
 import com.example.data.AppDatabase
+import com.example.data.FilterAction
 import com.example.data.SensitiveSmsReason
 import com.example.data.SettingsRepo
+import com.example.data.SmsFilterEngine
 import com.example.data.SmsParser
 import com.example.data.SmsRecord
 import com.example.data.SmsStatus
@@ -24,6 +26,7 @@ import kotlinx.coroutines.launch
  * - Stores `bank = (messages[0].originatingAddress ?: "").take(32)`.
  * - Stores both `receivedMs = messages[0].timestampMillis` and `storedMs = System.currentTimeMillis()`.
  * - Deduplicates locally via Room unique `fingerprint` index.
+ * - Evaluates user-defined custom filtering rules to reduce server load before dispatch.
  * - If `amountMinor == null` -> stores `status = IGNORED` (`+reason`).
  * - If `amountMinor != null` -> stores `status = NEW` and wakes up `ForwardWorker.enqueueMatcherSweep`.
  */
@@ -74,9 +77,10 @@ class SmsReceiver : BroadcastReceiver() {
 
     companion object {
         /**
-         * Processes a real incoming bank SMS, stores it in Room (if not from a personal mobile
-         * sender and not a duplicate), dispatches real-time sensitive SMS push notifications if
-         * configured, and enqueues `ForwardWorker.enqueueMatcherSweep` when a deposit is recorded.
+         * Processes a real incoming bank SMS, enforces user custom filtering rules, stores it in
+         * Room (if not dropped/personal/duplicate), dispatches real-time sensitive SMS push
+         * notifications if configured, and enqueues `ForwardWorker.enqueueMatcherSweep` only when
+         * an unfiltered deposit is recorded.
          */
         suspend fun ingestIncomingSms(
             appContext: Context,
@@ -106,6 +110,37 @@ class SmsReceiver : BroadcastReceiver() {
                 return false
             }
 
+            // 1. Pre-parse evaluation for custom keyword & sender filtering rules
+            val earlyFilterMatch = SmsFilterEngine.evaluate(
+                sender = bank,
+                rawBody = rawBody,
+                amountMinor = null,
+                settings = settings
+            )
+            if (earlyFilterMatch != null) {
+                if (earlyFilterMatch.rule.action == FilterAction.IGNORE_LOG_ONLY) {
+                    val detectedBank = SmsParser.detectBank(bank, rawBody)
+                    dao.insertIgnoreDuplicate(
+                        SmsRecord(
+                            fingerprint = fp,
+                            bank = bank,
+                            bankTitle = detectedBank.titleFa,
+                            body = rawBody,
+                            normalized = normalized,
+                            amountMinor = null,
+                            reason = "custom_filter",
+                            status = SmsStatus.IGNORED.name,
+                            receivedMs = receivedAtMs,
+                            storedMs = storedAtMs,
+                            decidedMs = storedAtMs,
+                            lastError = earlyFilterMatch.reasonDetailFa
+                        )
+                    )
+                }
+                settingsRepo.recordCustomFilterBlocked(earlyFilterMatch.rule.id)
+                return false
+            }
+
             val parsed = SmsParser.parse(rawBody)
             // Promotional / link SMS are never stored in logs
             if (parsed.reason == "promo") {
@@ -117,6 +152,38 @@ class SmsReceiver : BroadcastReceiver() {
             // Ignore non-deposit messages from unknown/promotional shortcodes that are not Iranian banks
             if (parsed.amountMinor == null && !isKnownBank) {
                 return false
+            }
+
+            // 2. Post-parse evaluation for amount-threshold custom filter rules
+            if (parsed.amountMinor != null) {
+                val amountFilterMatch = SmsFilterEngine.evaluate(
+                    sender = bank,
+                    rawBody = rawBody,
+                    amountMinor = parsed.amountMinor,
+                    settings = settings
+                )
+                if (amountFilterMatch != null) {
+                    if (amountFilterMatch.rule.action == FilterAction.IGNORE_LOG_ONLY) {
+                        dao.insertIgnoreDuplicate(
+                            SmsRecord(
+                                fingerprint = fp,
+                                bank = bank,
+                                bankTitle = detectedBank.titleFa,
+                                body = rawBody,
+                                normalized = normalized,
+                                amountMinor = parsed.amountMinor,
+                                reason = "custom_filter",
+                                status = SmsStatus.IGNORED.name,
+                                receivedMs = receivedAtMs,
+                                storedMs = storedAtMs,
+                                decidedMs = storedAtMs,
+                                lastError = amountFilterMatch.reasonDetailFa
+                            )
+                        )
+                    }
+                    settingsRepo.recordCustomFilterBlocked(amountFilterMatch.rule.id)
+                    return false
+                }
             }
 
             val waitingInvoices = dao.getWaitingInvoices()

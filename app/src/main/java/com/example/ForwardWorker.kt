@@ -2,9 +2,13 @@ package com.example
 
 import android.content.Context
 import androidx.work.BackoffPolicy
+import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
@@ -12,13 +16,17 @@ import com.example.data.AppDatabase
 import com.example.data.Deposit
 import com.example.data.LogDao
 import com.example.data.Matcher
+import com.example.data.RetryAttemptEventEntity
 import com.example.data.SettingsRepo
 import com.example.data.SmsRecord
 import com.example.data.SmsStatus
 import com.example.network.ApproveResult
+import com.example.network.BatchRetryPolicy
+import com.example.network.BatchRetryTracker
 import com.example.network.GatewayApiClient
 import com.example.network.GatewayResult
 import com.example.network.PendingFetchResult
+import com.example.network.ServerHealthTracker
 import com.example.util.NotificationHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -42,10 +50,22 @@ class ForwardWorker(
     override suspend fun doWork(): Result {
         return try {
             val manualApproveId = inputData.getLong(KEY_MANUAL_APPROVE_ID, -1L)
-            val outcome = if (manualApproveId > 0L) {
-                executeManualApproveLocked(applicationContext, manualApproveId)
-            } else {
-                executeSweepLocked(applicationContext)
+            val isBatchRetry = inputData.getBoolean(KEY_BATCH_RETRY_MODE, false)
+            val isRecoverySync = inputData.getBoolean(KEY_RECOVERY_SYNC_MODE, false)
+            val isLogCleanup = inputData.getBoolean(KEY_LOG_CLEANUP_MODE, false)
+            val includeAuth401 = inputData.getBoolean(KEY_RECOVERY_INCLUDE_401, false)
+            val recoveryReason = inputData.getString(KEY_RECOVERY_REASON)
+                ?: "همگام‌سازی خودکار اتصال پس از خطا"
+            val targetIds = inputData.getLongArray(KEY_BATCH_TARGET_IDS)?.toList()
+            val outcome = when {
+                isLogCleanup -> {
+                    runOldLogsCleanupNow(applicationContext, forceRun15Day = false)
+                    WorkOutcome.SUCCESS
+                }
+                manualApproveId > 0L -> executeManualApproveLocked(applicationContext, manualApproveId)
+                isRecoverySync -> executeRecoverySyncLocked(applicationContext, includeAuth401, recoveryReason)
+                isBatchRetry -> executeBatchRetryLocked(applicationContext, targetIds)
+                else -> executeSweepLocked(applicationContext)
             }
             when (outcome) {
                 WorkOutcome.SUCCESS -> Result.success()
@@ -62,7 +82,16 @@ class ForwardWorker(
 
     companion object {
         const val KEY_MANUAL_APPROVE_ID = "manual_approve_id"
+        const val KEY_BATCH_RETRY_MODE = "batch_retry_mode"
+        const val KEY_BATCH_TARGET_IDS = "batch_target_ids"
+        const val KEY_RECOVERY_SYNC_MODE = "recovery_sync_mode"
+        const val KEY_RECOVERY_INCLUDE_401 = "recovery_include_401"
+        const val KEY_RECOVERY_REASON = "recovery_reason"
+        const val KEY_LOG_CLEANUP_MODE = "log_cleanup_mode"
         private const val UNIQUE_SWEEP_WORK_NAME = "asis_matcher_pending_sweep"
+        private const val UNIQUE_BATCH_RETRY_WORK_NAME = "asis_batch_retry_worker"
+        private const val UNIQUE_RECOVERY_SYNC_WORK_NAME = "asis_post_error_recovery_sync"
+        private const val UNIQUE_LOG_CLEANUP_WORK_NAME = "asis_auto_log_cleanup_15d"
         private const val KEEP_DAYS = 30L
         private val workerMutex = Mutex()
 
@@ -81,6 +110,35 @@ class ForwardWorker(
         }
 
         /**
+         * Executes an automated or user-triggered batch retry for failed/retry-pending SMS items,
+         * processing up to `BatchRetryPolicy.DEFAULT_BATCH_SIZE` records per batch and scheduling
+         * the next exponential-backoff `WorkManager` batch if any retryable failures remain.
+         */
+        suspend fun runBatchRetryNow(
+            context: Context,
+            targetIds: List<Long>? = null
+        ): WorkOutcome = withContext(Dispatchers.IO) {
+            val appCtx = context.applicationContext
+            runCatching { executeBatchRetryLocked(appCtx, targetIds) }
+                .getOrElse { WorkOutcome.RETRY }
+        }
+
+        /**
+         * Runs post-error recovery connection sync: probes connectivity/server readiness, resets
+         * backoff timers on RETRY records (and eligible FAILED records), and immediately dispatches
+         * pending confirmations once the connection has recovered.
+         */
+        suspend fun runRecoverySyncNow(
+            context: Context,
+            includeAuth401: Boolean = false,
+            reasonFa: String = "همگام‌سازی اتصال بعد از خطاها"
+        ): WorkOutcome = withContext(Dispatchers.IO) {
+            val appCtx = context.applicationContext
+            runCatching { executeRecoverySyncLocked(appCtx, includeAuth401, reasonFa) }
+                .getOrElse { WorkOutcome.RETRY }
+        }
+
+        /**
          * Runs manual approval of a single record immediately on `Dispatchers.IO`,
          * and schedules a backup `WorkManager` retry if a network error occurs.
          */
@@ -94,15 +152,53 @@ class ForwardWorker(
             outcome
         }
 
+        suspend fun runOldLogsCleanupNow(
+            context: Context,
+            forceRun15Day: Boolean = false
+        ): Int = withContext(Dispatchers.IO) {
+            val appCtx = context.applicationContext
+            workerMutex.withLock {
+                val dao = AppDatabase.getInstance(appCtx).logDao()
+                val settingsRepo = SettingsRepo.getInstance(appCtx)
+                performLogRetentionCleanupLocked(
+                    dao = dao,
+                    settingsRepo = settingsRepo,
+                    nowMs = System.currentTimeMillis(),
+                    forceRun15Day = forceRun15Day
+                )
+            }
+        }
+
+        private suspend fun performLogRetentionCleanupLocked(
+            dao: LogDao,
+            settingsRepo: SettingsRepo,
+            nowMs: Long = System.currentTimeMillis(),
+            forceRun15Day: Boolean = false
+        ): Int {
+            val settings = settingsRepo.readSettings()
+            val use15DayRule = forceRun15Day || settings.autoClearOldLogsEnabled
+            val retentionDays = if (use15DayRule) {
+                com.example.data.GatewaySettings.AUTO_CLEAR_LOGS_DAYS
+            } else {
+                KEEP_DAYS
+            }
+            val cutoffMs = nowMs - TimeUnit.DAYS.toMillis(retentionDays)
+            val deletedSms = dao.deleteOlderThan(cutoffMs)
+            dao.deleteOldRetryEvents(cutoffMs)
+            if (use15DayRule && (deletedSms > 0 || forceRun15Day)) {
+                settingsRepo.recordAutoLogCleanup(deletedSms, nowMs)
+            }
+            return deletedSms
+        }
+
         private suspend fun executeSweepLocked(appContext: Context): WorkOutcome = workerMutex.withLock {
             val db = AppDatabase.getInstance(appContext)
             val dao = db.logDao()
             val settingsRepo = SettingsRepo.getInstance(appContext)
             val settings = settingsRepo.readSettings()
 
-            // 1. Delete old SMS records (> 30 days)
-            val thirtyDaysAgoMs = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(KEEP_DAYS)
-            dao.deleteOlderThan(thirtyDaysAgoMs)
+            // 1. Delete old SMS records & retry telemetry (15 days when enabled, else 30-day cap)
+            performLogRetentionCleanupLocked(dao = dao, settingsRepo = settingsRepo)
             dao.releaseStaleClaims()
 
             val activeDeposits = dao.getActiveDepositsForMatching()
@@ -111,14 +207,18 @@ class ForwardWorker(
             }
 
             if (!settings.isConfigured) {
+                val nowMs = System.currentTimeMillis()
                 for (rec in activeDeposits) {
+                    val nextAttempt = (rec.attempts + 1).coerceAtLeast(1)
                     dao.update(
                         rec.copy(
                             status = SmsStatus.RETRY.name,
-                            lastError = "در انتظار ثبت آدرس سرور و توکن در تنظیمات"
+                            lastError = "در انتظار ثبت آدرس سرور و توکن در تنظیمات",
+                            nextRetryAtMs = BatchRetryPolicy.computeNextRetryAtMs(nextAttempt, nowMs)
                         )
                     )
                 }
+                refreshBatchRetrySchedule(appContext, dao)
                 return@withLock WorkOutcome.RETRY
             }
 
@@ -136,26 +236,43 @@ class ForwardWorker(
 
                 is PendingFetchResult.NotFound404FallbackToSmsIn -> {
                     // Server is running classic `/sms-in` without `/sms-pending` -> forward directly to `POST /sms-in`
-                    return@withLock forwardDirectlyViaSmsIn(appContext, activeDeposits, dao, settingsRepo)
+                    val fallbackOutcome = forwardDirectlyViaSmsIn(appContext, activeDeposits, dao, settingsRepo)
+                    refreshBatchRetrySchedule(appContext, dao)
+                    return@withLock fallbackOutcome
                 }
 
                 is PendingFetchResult.Unauthorized401 -> {
+                    val failMs = System.currentTimeMillis()
                     settingsRepo.recordTokenError(pendingResult.message)
                     NotificationHelper.notifyTokenError(appContext, pendingResult.message)
-                    // RETRY (not FAILED): saving a corrected token starts a new sweep that picks these up again
                     for (rec in activeDeposits) {
+                        val wasRetry = rec.attempts > 0 || rec.statusEnum == SmsStatus.RETRY
                         dao.update(
                             rec.copy(
-                                status = SmsStatus.RETRY.name,
+                                status = SmsStatus.FAILED.name,
                                 httpCode = 401,
-                                lastError = pendingResult.message
+                                lastError = pendingResult.message,
+                                nextRetryAtMs = null
                             )
                         )
+                        if (wasRetry) {
+                            dao.insertRetryAttemptEvent(
+                                RetryAttemptEventEntity(
+                                    smsRecordId = rec.id,
+                                    attemptedAtMs = failMs,
+                                    succeeded = false,
+                                    httpCode = 401,
+                                    isAutoRetry = true
+                                )
+                            )
+                        }
                     }
+                    refreshBatchRetrySchedule(appContext, dao)
                     return@withLock WorkOutcome.FAILURE
                 }
 
                 is PendingFetchResult.PermanentError -> {
+                    val nowMs = System.currentTimeMillis()
                     NotificationHelper.notifyServerConnectionError(
                         context = appContext,
                         errorTitle = "خطای ارتباط با سرور درگاه",
@@ -163,34 +280,66 @@ class ForwardWorker(
                         httpCode = pendingResult.httpCode
                     )
                     for (rec in activeDeposits) {
-                        dao.update(
-                            rec.copy(
-                                status = SmsStatus.RETRY.name,
-                                httpCode = pendingResult.httpCode,
-                                lastError = pendingResult.message
-                            )
-                        )
-                    }
-                    return@withLock WorkOutcome.FAILURE
-                }
-
-                is PendingFetchResult.RetryableError -> {
-                    NotificationHelper.notifyServerConnectionError(
-                        context = appContext,
-                        errorTitle = "خطای ارتباط با سرور درگاه",
-                        errorDetail = pendingResult.message,
-                        httpCode = pendingResult.httpCode
-                    )
-                    for (rec in activeDeposits) {
+                        val wasRetry = rec.attempts > 0 || rec.statusEnum == SmsStatus.RETRY
+                        val nextAtt = rec.attempts + 1
                         dao.update(
                             rec.copy(
                                 status = SmsStatus.RETRY.name,
                                 httpCode = pendingResult.httpCode,
                                 lastError = pendingResult.message,
-                                attempts = rec.attempts + 1
+                                attempts = nextAtt,
+                                nextRetryAtMs = BatchRetryPolicy.computeNextRetryAtMs(nextAtt, nowMs)
                             )
                         )
+                        if (wasRetry) {
+                            dao.insertRetryAttemptEvent(
+                                RetryAttemptEventEntity(
+                                    smsRecordId = rec.id,
+                                    attemptedAtMs = nowMs,
+                                    succeeded = false,
+                                    httpCode = pendingResult.httpCode,
+                                    isAutoRetry = true
+                                )
+                            )
+                        }
                     }
+                    refreshBatchRetrySchedule(appContext, dao)
+                    return@withLock WorkOutcome.FAILURE
+                }
+
+                is PendingFetchResult.RetryableError -> {
+                    val nowMs = System.currentTimeMillis()
+                    NotificationHelper.notifyServerConnectionError(
+                        context = appContext,
+                        errorTitle = "خطای ارتباط با سرور درگاه",
+                        errorDetail = pendingResult.message,
+                        httpCode = pendingResult.httpCode
+                    )
+                    for (rec in activeDeposits) {
+                        val wasRetry = rec.attempts > 0 || rec.statusEnum == SmsStatus.RETRY
+                        val nextAtt = rec.attempts + 1
+                        dao.update(
+                            rec.copy(
+                                status = SmsStatus.RETRY.name,
+                                httpCode = pendingResult.httpCode,
+                                lastError = pendingResult.message,
+                                attempts = nextAtt,
+                                nextRetryAtMs = BatchRetryPolicy.computeNextRetryAtMs(nextAtt, nowMs)
+                            )
+                        )
+                        if (wasRetry) {
+                            dao.insertRetryAttemptEvent(
+                                RetryAttemptEventEntity(
+                                    smsRecordId = rec.id,
+                                    attemptedAtMs = nowMs,
+                                    succeeded = false,
+                                    httpCode = pendingResult.httpCode,
+                                    isAutoRetry = true
+                                )
+                            )
+                        }
+                    }
+                    refreshBatchRetrySchedule(appContext, dao)
                     return@withLock WorkOutcome.RETRY
                 }
             }
@@ -206,7 +355,7 @@ class ForwardWorker(
 
             val nowMs = System.currentTimeMillis()
             if (pendingSuccess.items.isNotEmpty()) {
-                dao.upsertInvoices(
+                dao.upsertServerWaitingInvoices(
                     pendingSuccess.items.map { item ->
                         com.example.data.PendingInvoiceEntity(
                             publicId = item.publicId,
@@ -398,6 +547,7 @@ class ForwardWorker(
             }
 
             // deposits that matched nothing yet stay active (NEW / UNKNOWN_DEPOSIT) until `match_window_hours` expires them
+            refreshBatchRetrySchedule(appContext, dao)
             val stillWaiting = dao.getActiveDepositsForMatching().any {
                 it.statusEnum == SmsStatus.NEW || it.statusEnum == SmsStatus.UNKNOWN_DEPOSIT
             }
@@ -447,12 +597,15 @@ class ForwardWorker(
             appContext: Context,
             deposits: List<SmsRecord>,
             dao: LogDao,
-            settingsRepo: SettingsRepo
+            settingsRepo: SettingsRepo,
+            isBatchRetryContext: Boolean = false,
+            isAutoRetry: Boolean = true
         ): WorkOutcome {
             val settings = settingsRepo.readSettings()
             var shouldRetry = false
 
             for (entry in deposits) {
+                val wasRetry = isBatchRetryContext || entry.attempts > 0 || entry.statusEnum == SmsStatus.RETRY
                 val res = GatewayApiClient.sendSms(
                     endpointUrl = settings.endpointUrl,
                     token = settings.gatewayToken,
@@ -462,6 +615,7 @@ class ForwardWorker(
                 val nowMs = System.currentTimeMillis()
                 when (res) {
                     is GatewayResult.Success -> {
+                        val fallbackPublicId = "SMS-${entry.id}"
                         dao.update(
                             entry.copy(
                                 status = SmsStatus.MATCHED.name,
@@ -469,23 +623,71 @@ class ForwardWorker(
                                 matchedKind = "sms-in",
                                 matchedId = "${res.status} (approved=${res.approved})",
                                 decidedMs = nowMs,
-                                lastError = null
+                                lastError = null,
+                                nextRetryAtMs = null
                             )
                         )
+                        if (entry.amountMinor != null && entry.amountMinor > 0L) {
+                            dao.recordApprovedInvoice(
+                                publicId = fallbackPublicId,
+                                kind = "sms-in",
+                                dueMinor = entry.amountMinor,
+                                smsId = entry.id,
+                                bankTitle = entry.bankTitle,
+                                matchedAtMs = nowMs
+                            )
+                            NotificationHelper.notifyInvoiceApproved(
+                                context = appContext,
+                                publicId = fallbackPublicId,
+                                kind = "sms-in",
+                                amountMinor = entry.amountMinor,
+                                bankTitle = entry.bankTitle,
+                                recordId = entry.id
+                            )
+                        }
+                        if (wasRetry) {
+                            dao.insertRetryAttemptEvent(
+                                RetryAttemptEventEntity(
+                                    smsRecordId = entry.id,
+                                    attemptedAtMs = nowMs,
+                                    succeeded = true,
+                                    httpCode = res.httpCode,
+                                    isAutoRetry = isAutoRetry
+                                )
+                            )
+                        }
                         settingsRepo.recordTokenError(null)
                         NotificationHelper.cancelServerErrorNotification(appContext)
                     }
 
                     is GatewayResult.PermanentFailure -> {
                         val keepForLater = res.isTokenError || res.httpCode == 404
+                        val nextAtt = entry.attempts + 1
                         dao.update(
                             entry.copy(
-                                status = if (keepForLater) SmsStatus.RETRY.name else SmsStatus.FAILED.name,
+                                status = if (res.isTokenError || !keepForLater) SmsStatus.FAILED.name else SmsStatus.RETRY.name,
                                 httpCode = res.httpCode,
                                 decidedMs = nowMs,
-                                lastError = res.message
+                                attempts = nextAtt,
+                                lastError = res.message,
+                                nextRetryAtMs = if (keepForLater && !res.isTokenError) {
+                                    BatchRetryPolicy.computeNextRetryAtMs(nextAtt, nowMs)
+                                } else {
+                                    null
+                                }
                             )
                         )
+                        if (wasRetry) {
+                            dao.insertRetryAttemptEvent(
+                                RetryAttemptEventEntity(
+                                    smsRecordId = entry.id,
+                                    attemptedAtMs = nowMs,
+                                    succeeded = false,
+                                    httpCode = res.httpCode,
+                                    isAutoRetry = isAutoRetry
+                                )
+                            )
+                        }
                         if (res.isTokenError) {
                             settingsRepo.recordTokenError(res.message)
                             NotificationHelper.notifyTokenError(appContext, res.message)
@@ -501,14 +703,27 @@ class ForwardWorker(
                     }
 
                     is GatewayResult.RetryableFailure -> {
+                        val nextAtt = entry.attempts + 1
                         dao.update(
                             entry.copy(
                                 status = SmsStatus.RETRY.name,
                                 httpCode = res.httpCode,
-                                attempts = entry.attempts + 1,
-                                lastError = res.message
+                                attempts = nextAtt,
+                                lastError = res.message,
+                                nextRetryAtMs = BatchRetryPolicy.computeNextRetryAtMs(nextAtt, nowMs)
                             )
                         )
+                        if (wasRetry) {
+                            dao.insertRetryAttemptEvent(
+                                RetryAttemptEventEntity(
+                                    smsRecordId = entry.id,
+                                    attemptedAtMs = nowMs,
+                                    succeeded = false,
+                                    httpCode = res.httpCode,
+                                    isAutoRetry = isAutoRetry
+                                )
+                            )
+                        }
                         NotificationHelper.notifyServerConnectionError(
                             context = appContext,
                             errorTitle = "خطا در ارسال پیامک به سرور",
@@ -530,10 +745,13 @@ class ForwardWorker(
             itemPublicId: String,
             clockOffsetMs: Long,
             dao: LogDao,
-            settingsRepo: SettingsRepo
+            settingsRepo: SettingsRepo,
+            isRetryContext: Boolean = false,
+            isAutoRetry: Boolean = true
         ): ApprovalStepOutcome {
             val amountMinor = rec.amountMinor ?: return ApprovalStepOutcome.DONE
             val settings = settingsRepo.readSettings()
+            val wasRetryRecord = isRetryContext || rec.attempts > 0 || rec.statusEnum == SmsStatus.RETRY
 
             val claimedRows = dao.claimForApproval(rec.id, itemKind, itemPublicId)
             if (claimedRows == 0 && rec.statusEnum != SmsStatus.CLAIMED) {
@@ -567,10 +785,37 @@ class ForwardWorker(
                             matchedId = itemPublicId,
                             decidedMs = nowMs,
                             httpCode = result.httpCode,
-                            lastError = null
+                            lastError = null,
+                            nextRetryAtMs = null
                         )
                     )
-                    dao.markInvoiceMatched(itemPublicId, rec.id)
+                    dao.recordApprovedInvoice(
+                        publicId = itemPublicId,
+                        kind = itemKind,
+                        dueMinor = amountMinor,
+                        smsId = rec.id,
+                        bankTitle = currentBeforeCall.bankTitle,
+                        matchedAtMs = nowMs
+                    )
+                    NotificationHelper.notifyInvoiceApproved(
+                        context = appContext,
+                        publicId = itemPublicId,
+                        kind = itemKind,
+                        amountMinor = amountMinor,
+                        bankTitle = currentBeforeCall.bankTitle,
+                        recordId = rec.id
+                    )
+                    if (wasRetryRecord) {
+                        dao.insertRetryAttemptEvent(
+                            RetryAttemptEventEntity(
+                                smsRecordId = rec.id,
+                                attemptedAtMs = nowMs,
+                                succeeded = true,
+                                httpCode = result.httpCode,
+                                isAutoRetry = isAutoRetry
+                            )
+                        )
+                    }
                     settingsRepo.recordTokenError(null)
                     NotificationHelper.cancelServerErrorNotification(appContext)
                     ApprovalStepOutcome.DONE
@@ -581,7 +826,9 @@ class ForwardWorker(
                         appContext = appContext,
                         deposits = listOf(currentBeforeCall),
                         dao = dao,
-                        settingsRepo = settingsRepo
+                        settingsRepo = settingsRepo,
+                        isBatchRetryContext = wasRetryRecord,
+                        isAutoRetry = isAutoRetry
                     )
                     when (fallbackOutcome) {
                         WorkOutcome.SUCCESS -> ApprovalStepOutcome.DONE
@@ -597,7 +844,8 @@ class ForwardWorker(
                         matchedId = itemPublicId,
                         decidedMs = nowMs,
                         httpCode = 409,
-                        lastError = result.reason
+                        lastError = result.reason,
+                        nextRetryAtMs = null
                     )
                     dao.update(updated)
                     NotificationHelper.notifyManualApprovalNeeded(
@@ -613,14 +861,26 @@ class ForwardWorker(
                 is ApproveResult.Unauthorized401 -> {
                     dao.update(
                         currentBeforeCall.copy(
-                            status = SmsStatus.RETRY.name,
+                            status = SmsStatus.FAILED.name,
                             matchedKind = itemKind,
                             matchedId = itemPublicId,
                             httpCode = 401,
                             lastError = result.message,
-                            decidedMs = nowMs
+                            decidedMs = nowMs,
+                            nextRetryAtMs = null
                         )
                     )
+                    if (wasRetryRecord) {
+                        dao.insertRetryAttemptEvent(
+                            RetryAttemptEventEntity(
+                                smsRecordId = rec.id,
+                                attemptedAtMs = nowMs,
+                                succeeded = false,
+                                httpCode = 401,
+                                isAutoRetry = isAutoRetry
+                            )
+                        )
+                    }
                     settingsRepo.recordTokenError(result.message)
                     NotificationHelper.notifyTokenError(appContext, result.message)
                     ApprovalStepOutcome.ABORT_401
@@ -633,9 +893,24 @@ class ForwardWorker(
                             matchedKind = itemKind,
                             matchedId = itemPublicId,
                             httpCode = result.httpCode,
-                            lastError = result.message
+                            lastError = result.message,
+                            nextRetryAtMs = BatchRetryPolicy.computeNextRetryAtMs(
+                                attempts = currentBeforeCall.attempts.coerceAtLeast(1),
+                                nowMs = nowMs
+                            )
                         )
                     )
+                    if (wasRetryRecord) {
+                        dao.insertRetryAttemptEvent(
+                            RetryAttemptEventEntity(
+                                smsRecordId = rec.id,
+                                attemptedAtMs = nowMs,
+                                succeeded = false,
+                                httpCode = result.httpCode,
+                                isAutoRetry = isAutoRetry
+                            )
+                        )
+                    }
                     NotificationHelper.notifyServerConnectionError(
                         context = appContext,
                         errorTitle = "خطای تأیید سفارش در سرور",
@@ -644,6 +919,758 @@ class ForwardWorker(
                     )
                     ApprovalStepOutcome.RETRY
                 }
+            }
+        }
+
+        private suspend fun executeBatchRetryLocked(
+            appContext: Context,
+            targetIds: List<Long>? = null
+        ): WorkOutcome = workerMutex.withLock {
+            BatchRetryTracker.onBatchStarted()
+            val db = AppDatabase.getInstance(appContext)
+            val dao = db.logDao()
+            val settingsRepo = SettingsRepo.getInstance(appContext)
+            val settings = settingsRepo.readSettings()
+            val nowMs = System.currentTimeMillis()
+
+            dao.releaseStaleClaims()
+
+            val batchCandidates = if (!targetIds.isNullOrEmpty()) {
+                dao.markIdsForImmediateBatchRetry(targetIds, nowMs)
+                dao.getRecordsByIds(targetIds).take(BatchRetryPolicy.DEFAULT_BATCH_SIZE)
+            } else {
+                dao.getRetryPendingRecords()
+                    .filter { rec ->
+                        BatchRetryPolicy.isAutoRetryEligible(rec) &&
+                            rec.statusEnum == SmsStatus.RETRY &&
+                            (rec.nextRetryAtMs == null || rec.nextRetryAtMs <= nowMs)
+                    }
+                    .take(BatchRetryPolicy.DEFAULT_BATCH_SIZE)
+            }
+
+            if (batchCandidates.isEmpty()) {
+                val nextAt = refreshBatchRetrySchedule(appContext, dao)
+                BatchRetryTracker.onBatchCompleted(
+                    processedCount = 0,
+                    succeededCount = 0,
+                    failedCount = 0,
+                    nextScheduledWorkAtMs = nextAt,
+                    nowMs = nowMs
+                )
+                return@withLock WorkOutcome.SUCCESS
+            }
+
+            if (!settings.isConfigured) {
+                val failTime = System.currentTimeMillis()
+                for (rec in batchCandidates) {
+                    val nextAtt = rec.attempts + 1
+                    dao.update(
+                        rec.copy(
+                            status = SmsStatus.RETRY.name,
+                            attempts = nextAtt,
+                            lastError = "در انتظار ثبت آدرس سرور و توکن در تنظیمات",
+                            nextRetryAtMs = BatchRetryPolicy.computeNextRetryAtMs(nextAtt, failTime)
+                        )
+                    )
+                }
+                val nextAt = refreshBatchRetrySchedule(appContext, dao)
+                BatchRetryTracker.onBatchCompleted(
+                    processedCount = batchCandidates.size,
+                    succeededCount = 0,
+                    failedCount = batchCandidates.size,
+                    nextScheduledWorkAtMs = nextAt,
+                    nowMs = failTime
+                )
+                return@withLock WorkOutcome.RETRY
+            }
+
+            var succeededCount = 0
+            var failedCount = 0
+            val isAutoRetry = targetIds.isNullOrEmpty()
+
+            val directApprovalItems = batchCandidates.filter {
+                !it.matchedId.isNullOrBlank() && it.matchedKind != "sms-in"
+            }
+            val sweepMatchingItems = batchCandidates.filterNot {
+                !it.matchedId.isNullOrBlank() && it.matchedKind != "sms-in"
+            }
+
+            for (rec in directApprovalItems) {
+                val kind = rec.matchedKind ?: "order"
+                val publicId = rec.matchedId ?: continue
+                when (
+                    claimAndSendApproval(
+                        appContext = appContext,
+                        rec = rec,
+                        itemKind = kind,
+                        itemPublicId = publicId,
+                        clockOffsetMs = settings.lastClockOffsetMs,
+                        dao = dao,
+                        settingsRepo = settingsRepo,
+                        isRetryContext = true,
+                        isAutoRetry = isAutoRetry
+                    )
+                ) {
+                    ApprovalStepOutcome.DONE -> {
+                        val updated = dao.getById(rec.id)
+                        if (updated?.statusEnum == SmsStatus.MATCHED) succeededCount++ else failedCount++
+                    }
+                    ApprovalStepOutcome.RETRY,
+                    ApprovalStepOutcome.ABORT_401 -> failedCount++
+                }
+            }
+
+            if (sweepMatchingItems.isNotEmpty()) {
+                when (val pendingResult = GatewayApiClient.fetchPendingItems(settings.endpointUrl, settings.gatewayToken)) {
+                    is PendingFetchResult.Success -> {
+                        NotificationHelper.cancelServerErrorNotification(appContext)
+                        settingsRepo.recordTokenError(null)
+                        val clockOffsetMs = pendingResult.clockOffsetMs
+                        settingsRepo.updateServerSyncMeta(
+                            clockOffsetMs = clockOffsetMs,
+                            matchWindowHours = pendingResult.matchWindowHours,
+                            autoMaxToman = pendingResult.autoMaxToman
+                        )
+                        val batchNow = System.currentTimeMillis()
+                        if (pendingResult.items.isNotEmpty()) {
+                            dao.upsertServerWaitingInvoices(
+                                pendingResult.items.map { item ->
+                                    com.example.data.PendingInvoiceEntity(
+                                        publicId = item.publicId,
+                                        kind = item.kind,
+                                        dueMinor = item.dueMinor,
+                                        createdMs = item.at,
+                                        syncedAtMs = batchNow,
+                                        early = item.early,
+                                        status = "WAITING"
+                                    )
+                                }
+                            )
+                        }
+                        val dbWaiting = dao.getWaitingInvoices()
+                        val combinedItems = (
+                            pendingResult.items + dbWaiting.map { inv ->
+                                com.example.data.Item(
+                                    kind = inv.kind,
+                                    publicId = inv.publicId,
+                                    dueMinor = inv.dueMinor,
+                                    at = inv.createdMs,
+                                    early = inv.early
+                                )
+                            }
+                        ).distinctBy { it.publicId }
+
+                        if (combinedItems.isEmpty()) {
+                            for (rec in sweepMatchingItems) {
+                                val nextAtt = rec.attempts + 1
+                                dao.update(
+                                    rec.copy(
+                                        status = SmsStatus.UNKNOWN_DEPOSIT.name,
+                                        reason = "unknown_deposit",
+                                        attempts = nextAtt,
+                                        nextRetryAtMs = null,
+                                        lastError = "واریز ناشناس: فاکتور منتظر با این مبلغ در سرور موجود نیست."
+                                    )
+                                )
+                            }
+                        } else {
+                            val byId = sweepMatchingItems.associateBy { it.id }
+                            val deposits = sweepMatchingItems.mapNotNull { rec ->
+                                val amt = rec.amountMinor ?: return@mapNotNull null
+                                Deposit(rec.id, amt, rec.receivedMs + clockOffsetMs + 60_000L)
+                            }
+                            val (pairs, _) = Matcher.plan(deposits, combinedItems)
+                            val pairedIds = pairs.map { it.first.id }.toSet()
+                            for ((dep, item) in pairs) {
+                                val rec = byId[dep.id] ?: continue
+                                when (
+                                    claimAndSendApproval(
+                                        appContext = appContext,
+                                        rec = rec,
+                                        itemKind = item.kind,
+                                        itemPublicId = item.publicId,
+                                        clockOffsetMs = clockOffsetMs,
+                                        dao = dao,
+                                        settingsRepo = settingsRepo,
+                                        isRetryContext = true,
+                                        isAutoRetry = isAutoRetry
+                                    )
+                                ) {
+                                    ApprovalStepOutcome.DONE -> {
+                                        val updated = dao.getById(rec.id)
+                                        if (updated?.statusEnum == SmsStatus.MATCHED) succeededCount++ else failedCount++
+                                    }
+                                    ApprovalStepOutcome.RETRY,
+                                    ApprovalStepOutcome.ABORT_401 -> failedCount++
+                                }
+                            }
+                            for (rec in sweepMatchingItems) {
+                                if (rec.id !in pairedIds) {
+                                    dao.update(
+                                        rec.copy(
+                                            status = SmsStatus.UNKNOWN_DEPOSIT.name,
+                                            reason = "unknown_deposit",
+                                            nextRetryAtMs = null,
+                                            lastError = "واریز ناشناس: پس از بررسی با سرور، فاکتور منطبق یافت نشد."
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    is PendingFetchResult.NotFound404FallbackToSmsIn -> {
+                        forwardDirectlyViaSmsIn(
+                            appContext = appContext,
+                            deposits = sweepMatchingItems,
+                            dao = dao,
+                            settingsRepo = settingsRepo,
+                            isBatchRetryContext = true,
+                            isAutoRetry = isAutoRetry
+                        )
+                        for (rec in sweepMatchingItems) {
+                            val updated = dao.getById(rec.id)
+                            if (updated?.statusEnum == SmsStatus.MATCHED) succeededCount++ else failedCount++
+                        }
+                    }
+
+                    is PendingFetchResult.Unauthorized401 -> {
+                        val failTime = System.currentTimeMillis()
+                        settingsRepo.recordTokenError(pendingResult.message)
+                        NotificationHelper.notifyTokenError(appContext, pendingResult.message)
+                        for (rec in sweepMatchingItems) {
+                            dao.update(
+                                rec.copy(
+                                    status = SmsStatus.FAILED.name,
+                                    httpCode = 401,
+                                    lastError = pendingResult.message,
+                                    nextRetryAtMs = null
+                                )
+                            )
+                            dao.insertRetryAttemptEvent(
+                                RetryAttemptEventEntity(
+                                    smsRecordId = rec.id,
+                                    attemptedAtMs = failTime,
+                                    succeeded = false,
+                                    httpCode = 401,
+                                    isAutoRetry = isAutoRetry
+                                )
+                            )
+                            failedCount++
+                        }
+                    }
+
+                    is PendingFetchResult.PermanentError -> {
+                        val failTime = System.currentTimeMillis()
+                        NotificationHelper.notifyServerConnectionError(
+                            context = appContext,
+                            errorTitle = "خطای ارسال دسته‌ای به سرور",
+                            errorDetail = pendingResult.message,
+                            httpCode = pendingResult.httpCode
+                        )
+                        for (rec in sweepMatchingItems) {
+                            val nextAtt = rec.attempts + 1
+                            dao.update(
+                                rec.copy(
+                                    status = SmsStatus.RETRY.name,
+                                    httpCode = pendingResult.httpCode,
+                                    lastError = pendingResult.message,
+                                    attempts = nextAtt,
+                                    nextRetryAtMs = BatchRetryPolicy.computeNextRetryAtMs(nextAtt, failTime)
+                                )
+                            )
+                            dao.insertRetryAttemptEvent(
+                                RetryAttemptEventEntity(
+                                    smsRecordId = rec.id,
+                                    attemptedAtMs = failTime,
+                                    succeeded = false,
+                                    httpCode = pendingResult.httpCode,
+                                    isAutoRetry = isAutoRetry
+                                )
+                            )
+                            failedCount++
+                        }
+                    }
+
+                    is PendingFetchResult.RetryableError -> {
+                        val failTime = System.currentTimeMillis()
+                        NotificationHelper.notifyServerConnectionError(
+                            context = appContext,
+                            errorTitle = "خطای ارسال دسته‌ای به سرور",
+                            errorDetail = pendingResult.message,
+                            httpCode = pendingResult.httpCode
+                        )
+                        for (rec in sweepMatchingItems) {
+                            val nextAtt = rec.attempts + 1
+                            dao.update(
+                                rec.copy(
+                                    status = SmsStatus.RETRY.name,
+                                    httpCode = pendingResult.httpCode,
+                                    lastError = pendingResult.message,
+                                    attempts = nextAtt,
+                                    nextRetryAtMs = BatchRetryPolicy.computeNextRetryAtMs(nextAtt, failTime)
+                                )
+                            )
+                            dao.insertRetryAttemptEvent(
+                                RetryAttemptEventEntity(
+                                    smsRecordId = rec.id,
+                                    attemptedAtMs = failTime,
+                                    succeeded = false,
+                                    httpCode = pendingResult.httpCode,
+                                    isAutoRetry = isAutoRetry
+                                )
+                            )
+                            failedCount++
+                        }
+                    }
+                }
+            }
+
+            val nextScheduledAt = refreshBatchRetrySchedule(appContext, dao)
+            BatchRetryTracker.onBatchCompleted(
+                processedCount = batchCandidates.size,
+                succeededCount = succeededCount,
+                failedCount = failedCount,
+                nextScheduledWorkAtMs = nextScheduledAt,
+                nowMs = System.currentTimeMillis()
+            )
+            if (failedCount > 0) WorkOutcome.RETRY else WorkOutcome.SUCCESS
+        }
+
+        private suspend fun executeRecoverySyncLocked(
+            appContext: Context,
+            includeAuth401: Boolean,
+            reasonFa: String
+        ): WorkOutcome = workerMutex.withLock {
+            ServerHealthTracker.onRecoverySyncStarted(reasonFa)
+            val db = AppDatabase.getInstance(appContext)
+            val dao = db.logDao()
+            val settingsRepo = SettingsRepo.getInstance(appContext)
+            val settings = settingsRepo.readSettings()
+            val nowMs = System.currentTimeMillis()
+
+            performLogRetentionCleanupLocked(dao = dao, settingsRepo = settingsRepo, nowMs = nowMs)
+            dao.releaseStaleClaims()
+
+            if (!settings.isConfigured || !settings.serviceEnabled) {
+                val remaining = dao.getRecoveryCandidateCount()
+                ServerHealthTracker.onRecoverySyncCompleted(
+                    recoveredCount = 0,
+                    remainingErrorCount = remaining,
+                    nowMs = nowMs
+                )
+                return@withLock if (remaining > 0 && settings.autoSyncAfterErrors) {
+                    schedulePostErrorRecoveryWorker(appContext, delayMs = 20_000L)
+                    WorkOutcome.RETRY
+                } else {
+                    WorkOutcome.SUCCESS
+                }
+            }
+
+            // Reset backoff timers & rescue recoverable FAILED items before processing
+            dao.prepareErrorRecordsForRecoverySync(includeAuth401 = includeAuth401, nowMs = nowMs)
+
+            val retryItems = dao.getRetryPendingRecords()
+                .filter { it.statusEnum == SmsStatus.RETRY }
+            val activeItems = dao.getActiveDepositsForMatching()
+            val candidates = (retryItems + activeItems).distinctBy { it.id }
+
+            if (candidates.isEmpty()) {
+                val pingOk = GatewayApiClient.pingServer(settings.endpointUrl, settings.gatewayToken)
+                val remaining = dao.getRecoveryCandidateCount()
+                if (pingOk) {
+                    settingsRepo.recordTokenError(null)
+                    NotificationHelper.cancelServerErrorNotification(appContext)
+                    cancelPostErrorRecoveryWorker(appContext)
+                } else if (remaining > 0 && settings.autoSyncAfterErrors) {
+                    schedulePostErrorRecoveryWorker(appContext, delayMs = 20_000L)
+                }
+                ServerHealthTracker.onRecoverySyncCompleted(
+                    recoveredCount = 0,
+                    remainingErrorCount = remaining,
+                    nowMs = System.currentTimeMillis()
+                )
+                return@withLock if (pingOk) WorkOutcome.SUCCESS else WorkOutcome.RETRY
+            }
+
+            BatchRetryTracker.onBatchStarted()
+            var succeededCount = 0
+            var failedCount = 0
+
+            val directApprovalItems = candidates.filter {
+                !it.matchedId.isNullOrBlank() && it.matchedKind != "sms-in"
+            }
+            val sweepMatchingItems = candidates.filterNot {
+                !it.matchedId.isNullOrBlank() && it.matchedKind != "sms-in"
+            }
+
+            for (rec in directApprovalItems) {
+                val kind = rec.matchedKind ?: "order"
+                val publicId = rec.matchedId ?: continue
+                when (
+                    claimAndSendApproval(
+                        appContext = appContext,
+                        rec = rec,
+                        itemKind = kind,
+                        itemPublicId = publicId,
+                        clockOffsetMs = settings.lastClockOffsetMs,
+                        dao = dao,
+                        settingsRepo = settingsRepo,
+                        isRetryContext = true,
+                        isAutoRetry = true
+                    )
+                ) {
+                    ApprovalStepOutcome.DONE -> {
+                        val updated = dao.getById(rec.id)
+                        if (updated?.statusEnum == SmsStatus.MATCHED) succeededCount++ else failedCount++
+                    }
+                    ApprovalStepOutcome.RETRY,
+                    ApprovalStepOutcome.ABORT_401 -> failedCount++
+                }
+            }
+
+            if (sweepMatchingItems.isNotEmpty()) {
+                when (val pendingResult = GatewayApiClient.fetchPendingItems(settings.endpointUrl, settings.gatewayToken)) {
+                    is PendingFetchResult.Success -> {
+                        NotificationHelper.cancelServerErrorNotification(appContext)
+                        settingsRepo.recordTokenError(null)
+                        val clockOffsetMs = pendingResult.clockOffsetMs
+                        settingsRepo.updateServerSyncMeta(
+                            clockOffsetMs = clockOffsetMs,
+                            matchWindowHours = pendingResult.matchWindowHours,
+                            autoMaxToman = pendingResult.autoMaxToman
+                        )
+                        val batchNow = System.currentTimeMillis()
+                        if (pendingResult.items.isNotEmpty()) {
+                            dao.upsertServerWaitingInvoices(
+                                pendingResult.items.map { item ->
+                                    com.example.data.PendingInvoiceEntity(
+                                        publicId = item.publicId,
+                                        kind = item.kind,
+                                        dueMinor = item.dueMinor,
+                                        createdMs = item.at,
+                                        syncedAtMs = batchNow,
+                                        early = item.early,
+                                        status = "WAITING"
+                                    )
+                                }
+                            )
+                        }
+                        val dbWaiting = dao.getWaitingInvoices()
+                        val combinedItems = (
+                            pendingResult.items + dbWaiting.map { inv ->
+                                com.example.data.Item(
+                                    kind = inv.kind,
+                                    publicId = inv.publicId,
+                                    dueMinor = inv.dueMinor,
+                                    at = inv.createdMs,
+                                    early = inv.early
+                                )
+                            }
+                        ).distinctBy { it.publicId }
+
+                        if (combinedItems.isEmpty()) {
+                            for (rec in sweepMatchingItems) {
+                                if (rec.statusEnum == SmsStatus.RETRY || rec.statusEnum == SmsStatus.NEW) {
+                                    dao.update(
+                                        rec.copy(
+                                            status = SmsStatus.UNKNOWN_DEPOSIT.name,
+                                            reason = "unknown_deposit",
+                                            nextRetryAtMs = null,
+                                            lastError = "واریز ناشناس: پس از اتصال مجدد، فاکتور منتظر با این مبلغ در سرور یافت نشد."
+                                        )
+                                    )
+                                }
+                            }
+                        } else {
+                            val byId = sweepMatchingItems.associateBy { it.id }
+                            val deposits = sweepMatchingItems.mapNotNull { rec ->
+                                val amt = rec.amountMinor ?: return@mapNotNull null
+                                Deposit(rec.id, amt, rec.receivedMs + clockOffsetMs + 60_000L)
+                            }
+                            val (pairs, _) = Matcher.plan(deposits, combinedItems)
+                            val pairedIds = pairs.map { it.first.id }.toSet()
+                            for ((dep, item) in pairs) {
+                                val rec = byId[dep.id] ?: continue
+                                when (
+                                    claimAndSendApproval(
+                                        appContext = appContext,
+                                        rec = rec,
+                                        itemKind = item.kind,
+                                        itemPublicId = item.publicId,
+                                        clockOffsetMs = clockOffsetMs,
+                                        dao = dao,
+                                        settingsRepo = settingsRepo,
+                                        isRetryContext = true,
+                                        isAutoRetry = true
+                                    )
+                                ) {
+                                    ApprovalStepOutcome.DONE -> {
+                                        val updated = dao.getById(rec.id)
+                                        if (updated?.statusEnum == SmsStatus.MATCHED) succeededCount++ else failedCount++
+                                    }
+                                    ApprovalStepOutcome.RETRY,
+                                    ApprovalStepOutcome.ABORT_401 -> failedCount++
+                                }
+                            }
+                            for (rec in sweepMatchingItems) {
+                                if (rec.id !in pairedIds && rec.statusEnum != SmsStatus.UNKNOWN_DEPOSIT) {
+                                    dao.update(
+                                        rec.copy(
+                                            status = SmsStatus.UNKNOWN_DEPOSIT.name,
+                                            reason = "unknown_deposit",
+                                            nextRetryAtMs = null,
+                                            lastError = "واریز ناشناس: پس از بازیابی اتصال، فاکتور منطبق یافت نشد."
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    is PendingFetchResult.NotFound404FallbackToSmsIn -> {
+                        forwardDirectlyViaSmsIn(
+                            appContext = appContext,
+                            deposits = sweepMatchingItems,
+                            dao = dao,
+                            settingsRepo = settingsRepo,
+                            isBatchRetryContext = true,
+                            isAutoRetry = true
+                        )
+                        for (rec in sweepMatchingItems) {
+                            val updated = dao.getById(rec.id)
+                            if (updated?.statusEnum == SmsStatus.MATCHED) succeededCount++ else failedCount++
+                        }
+                    }
+
+                    is PendingFetchResult.Unauthorized401 -> {
+                        val failTime = System.currentTimeMillis()
+                        settingsRepo.recordTokenError(pendingResult.message)
+                        NotificationHelper.notifyTokenError(appContext, pendingResult.message)
+                        for (rec in sweepMatchingItems) {
+                            dao.update(
+                                rec.copy(
+                                    status = SmsStatus.FAILED.name,
+                                    httpCode = 401,
+                                    lastError = pendingResult.message,
+                                    nextRetryAtMs = null
+                                )
+                            )
+                            dao.insertRetryAttemptEvent(
+                                RetryAttemptEventEntity(
+                                    smsRecordId = rec.id,
+                                    attemptedAtMs = failTime,
+                                    succeeded = false,
+                                    httpCode = 401,
+                                    isAutoRetry = true
+                                )
+                            )
+                            failedCount++
+                        }
+                    }
+
+                    is PendingFetchResult.PermanentError -> {
+                        val failTime = System.currentTimeMillis()
+                        NotificationHelper.notifyServerConnectionError(
+                            context = appContext,
+                            errorTitle = "خطای همگام‌سازی پس از اتصال",
+                            errorDetail = pendingResult.message,
+                            httpCode = pendingResult.httpCode
+                        )
+                        for (rec in sweepMatchingItems) {
+                            val nextAtt = rec.attempts + 1
+                            dao.update(
+                                rec.copy(
+                                    status = SmsStatus.RETRY.name,
+                                    httpCode = pendingResult.httpCode,
+                                    lastError = pendingResult.message,
+                                    attempts = nextAtt,
+                                    nextRetryAtMs = BatchRetryPolicy.computeNextRetryAtMs(nextAtt, failTime)
+                                )
+                            )
+                            dao.insertRetryAttemptEvent(
+                                RetryAttemptEventEntity(
+                                    smsRecordId = rec.id,
+                                    attemptedAtMs = failTime,
+                                    succeeded = false,
+                                    httpCode = pendingResult.httpCode,
+                                    isAutoRetry = true
+                                )
+                            )
+                            failedCount++
+                        }
+                    }
+
+                    is PendingFetchResult.RetryableError -> {
+                        val failTime = System.currentTimeMillis()
+                        NotificationHelper.notifyServerConnectionError(
+                            context = appContext,
+                            errorTitle = "خطای همگام‌سازی پس از اتصال",
+                            errorDetail = pendingResult.message,
+                            httpCode = pendingResult.httpCode
+                        )
+                        for (rec in sweepMatchingItems) {
+                            val nextAtt = rec.attempts + 1
+                            dao.update(
+                                rec.copy(
+                                    status = SmsStatus.RETRY.name,
+                                    httpCode = pendingResult.httpCode,
+                                    lastError = pendingResult.message,
+                                    attempts = nextAtt,
+                                    nextRetryAtMs = BatchRetryPolicy.computeNextRetryAtMs(nextAtt, failTime)
+                                )
+                            )
+                            dao.insertRetryAttemptEvent(
+                                RetryAttemptEventEntity(
+                                    smsRecordId = rec.id,
+                                    attemptedAtMs = failTime,
+                                    succeeded = false,
+                                    httpCode = pendingResult.httpCode,
+                                    isAutoRetry = true
+                                )
+                            )
+                            failedCount++
+                        }
+                    }
+                }
+            }
+
+            val finishMs = System.currentTimeMillis()
+            val remainingErrors = dao.getRecoveryCandidateCount()
+            val nextScheduledAt = refreshBatchRetrySchedule(appContext, dao)
+            BatchRetryTracker.onBatchCompleted(
+                processedCount = candidates.size,
+                succeededCount = succeededCount,
+                failedCount = failedCount,
+                nextScheduledWorkAtMs = nextScheduledAt,
+                nowMs = finishMs
+            )
+            if (succeededCount > 0) {
+                settingsRepo.recordErrorRecoverySync(succeededCount, finishMs)
+            }
+            if (failedCount == 0 && remainingErrors == 0) {
+                NotificationHelper.cancelServerErrorNotification(appContext)
+                cancelPostErrorRecoveryWorker(appContext)
+            } else if (settings.autoSyncAfterErrors && remainingErrors > 0) {
+                schedulePostErrorRecoveryWorker(appContext, delayMs = 20_000L)
+            }
+            ServerHealthTracker.onRecoverySyncCompleted(
+                recoveredCount = succeededCount,
+                remainingErrorCount = remainingErrors,
+                nowMs = finishMs
+            )
+            if (failedCount > 0) WorkOutcome.RETRY else WorkOutcome.SUCCESS
+        }
+
+        private suspend fun refreshBatchRetrySchedule(appContext: Context, dao: LogDao): Long? {
+            val pending = dao.getRetryPendingRecords()
+            val earliest = BatchRetryPolicy.earliestAutoRetryAtMs(pending)
+            BatchRetryTracker.updateNextScheduledWork(earliest)
+            if (earliest != null) {
+                val delayMs = (earliest - System.currentTimeMillis()).coerceAtLeast(1_000L)
+                scheduleDelayedBatchRetry(appContext, delayMs)
+                if (SettingsRepo.getInstance(appContext).readSettings().autoSyncAfterErrors) {
+                    schedulePostErrorRecoveryWorker(appContext, delayMs = delayMs.coerceAtLeast(15_000L))
+                }
+            } else {
+                runCatching {
+                    WorkManager.getInstance(appContext.applicationContext)
+                        .cancelUniqueWork(UNIQUE_BATCH_RETRY_WORK_NAME)
+                }
+                if (pending.isEmpty()) {
+                    cancelPostErrorRecoveryWorker(appContext)
+                }
+            }
+            return earliest
+        }
+
+        fun scheduleDelayedBatchRetry(context: Context, delayMs: Long) {
+            runCatching {
+                val request = OneTimeWorkRequestBuilder<ForwardWorker>()
+                    .setInitialDelay(delayMs.coerceAtLeast(1_000L), TimeUnit.MILLISECONDS)
+                    .setInputData(workDataOf(KEY_BATCH_RETRY_MODE to true))
+                    .setBackoffCriteria(
+                        BackoffPolicy.EXPONENTIAL,
+                        15L,
+                        TimeUnit.SECONDS
+                    )
+                    .addTag(UNIQUE_BATCH_RETRY_WORK_NAME)
+                    .build()
+
+                WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+                    UNIQUE_BATCH_RETRY_WORK_NAME,
+                    ExistingWorkPolicy.REPLACE,
+                    request
+                )
+            }
+        }
+
+        fun schedulePostErrorRecoveryWorker(
+            context: Context,
+            includeAuth401: Boolean = false,
+            delayMs: Long = 1_500L,
+            reasonFa: String = "بازگشت اتصال و همگام‌سازی خطاها"
+        ) {
+            runCatching {
+                val constraints = Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+
+                val request = OneTimeWorkRequestBuilder<ForwardWorker>()
+                    .setConstraints(constraints)
+                    .setInitialDelay(delayMs.coerceAtLeast(0L), TimeUnit.MILLISECONDS)
+                    .setInputData(
+                        workDataOf(
+                            KEY_RECOVERY_SYNC_MODE to true,
+                            KEY_RECOVERY_INCLUDE_401 to includeAuth401,
+                            KEY_RECOVERY_REASON to reasonFa
+                        )
+                    )
+                    .setBackoffCriteria(
+                        BackoffPolicy.EXPONENTIAL,
+                        15L,
+                        TimeUnit.SECONDS
+                    )
+                    .addTag(UNIQUE_RECOVERY_SYNC_WORK_NAME)
+                    .build()
+
+                WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+                    UNIQUE_RECOVERY_SYNC_WORK_NAME,
+                    ExistingWorkPolicy.REPLACE,
+                    request
+                )
+            }
+        }
+
+        fun cancelPostErrorRecoveryWorker(context: Context) {
+            runCatching {
+                WorkManager.getInstance(context.applicationContext)
+                    .cancelUniqueWork(UNIQUE_RECOVERY_SYNC_WORK_NAME)
+            }
+        }
+
+        fun schedulePeriodicLogCleanupWorker(context: Context) {
+            runCatching {
+                val constraints = Constraints.Builder()
+                    .setRequiresBatteryNotLow(true)
+                    .build()
+                val request = PeriodicWorkRequestBuilder<ForwardWorker>(1, TimeUnit.DAYS)
+                    .setConstraints(constraints)
+                    .setInputData(workDataOf(KEY_LOG_CLEANUP_MODE to true))
+                    .addTag(UNIQUE_LOG_CLEANUP_WORK_NAME)
+                    .build()
+                WorkManager.getInstance(context.applicationContext).enqueueUniquePeriodicWork(
+                    UNIQUE_LOG_CLEANUP_WORK_NAME,
+                    ExistingPeriodicWorkPolicy.UPDATE,
+                    request
+                )
+            }
+        }
+
+        fun cancelPeriodicLogCleanupWorker(context: Context) {
+            runCatching {
+                WorkManager.getInstance(context.applicationContext)
+                    .cancelUniqueWork(UNIQUE_LOG_CLEANUP_WORK_NAME)
             }
         }
 

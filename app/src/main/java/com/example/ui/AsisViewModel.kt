@@ -6,15 +6,25 @@ import androidx.lifecycle.viewModelScope
 import com.example.ForwardWorker
 import com.example.InternetWatchService
 import com.example.data.AppDatabase
+import com.example.data.AppThemeMode
+import com.example.data.FilterAction
+import com.example.data.FilterTarget
 import com.example.data.GatewaySettings
 import com.example.data.Item
 import com.example.data.SettingsRepo
+import com.example.data.SmsFilterEngine
 import com.example.data.SmsParser
 import com.example.data.SmsRecord
 import com.example.data.SmsStatus
 import com.example.network.GatewayApiClient
 import com.example.network.GatewayResult
+import com.example.network.BatchRetryPolicy
+import com.example.network.BatchRetryState
+import com.example.network.BatchRetryTracker
 import com.example.network.PendingFetchResult
+import com.example.network.PostErrorSyncState
+import com.example.network.RetryHealthAnalytics
+import com.example.network.RetryHealthSummary
 import com.example.network.ServerConnectionLevel
 import com.example.network.ServerConnectionStatusUi
 import com.example.network.ServerConnectionTelemetry
@@ -27,9 +37,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.TimeUnit
 
 sealed class TestConnectionUiState {
     data object Idle : TestConnectionUiState()
@@ -78,6 +90,33 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
 
+    val batchRetryState: StateFlow<BatchRetryState> = BatchRetryTracker.stateFlow
+    val postErrorSyncState: StateFlow<PostErrorSyncState> = ServerHealthTracker.postErrorSyncFlow
+
+    val totalLogsCount: StateFlow<Int> = allLogs
+        .map { it.size }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val oldLogs15DaysCount: StateFlow<Int> = allLogs
+        .map { logs ->
+            val cutoffMs = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(GatewaySettings.AUTO_CLEAR_LOGS_DAYS)
+            logs.count { it.storedMs < cutoffMs }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val retryHealthSummary: StateFlow<RetryHealthSummary> = combine(
+        allLogs,
+        logDao.observeRecentRetryEvents(
+            System.currentTimeMillis() - java.util.concurrent.TimeUnit.DAYS.toMillis(8)
+        )
+    ) { logs, events ->
+        RetryHealthAnalytics.compute7DaySummary(logs = logs, events = events)
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        RetryHealthAnalytics.compute7DaySummary(emptyList(), emptyList())
+    )
+
     val serverStatusState: StateFlow<ServerConnectionStatusUi> = combine(
         isOnlineState,
         settingsState,
@@ -102,15 +141,51 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { InternetWatchService.register(appContext) }
         viewModelScope.launch {
             runCatching { logDao.deletePromoLogs() }
+            if (settingsRepo.readSettings().autoClearOldLogsEnabled) {
+                runCatching {
+                    ForwardWorker.schedulePeriodicLogCleanupWorker(appContext)
+                    ForwardWorker.runOldLogsCleanupNow(appContext, forceRun15Day = false)
+                }
+            }
         }
-        // Re-probe server immediately whenever network transitions back online
+        // Re-probe & auto-sync after errors immediately whenever network transitions back online
         viewModelScope.launch {
             var previousOnline: Boolean? = null
             isOnlineState.collect { onlineNow ->
                 if (onlineNow && previousOnline == false) {
-                    probeServerSilently()
+                    val current = settingsRepo.readSettings()
+                    if (current.autoSyncAfterErrors && current.isConfigured) {
+                        syncConnectionAfterErrorsInternal(
+                            includeAuth401 = false,
+                            reasonFa = "بازگشت اتصال اینترنت",
+                            showFeedbackSnackbar = false
+                        )
+                    } else {
+                        probeServerSilently()
+                    }
                 }
                 previousOnline = onlineNow
+            }
+        }
+        // Automatically sync pending/failed items when server recovers from a prior error
+        viewModelScope.launch {
+            ServerHealthTracker.postErrorSyncFlow.collect { syncState ->
+                if (syncState.serverRecoveredPendingSync && !syncState.isSyncing) {
+                    val triggerReason = ServerHealthTracker.consumeServerRecoveredTrigger()
+                        ?: return@collect
+                    val current = settingsRepo.readSettings()
+                    if (current.autoSyncAfterErrors && current.isConfigured && current.serviceEnabled && isOnlineState.value) {
+                        val hasRecoverable = logDao.getRecoveryCandidateCount() > 0 ||
+                            logDao.getActiveDepositsForMatching().isNotEmpty()
+                        if (hasRecoverable) {
+                            ForwardWorker.runRecoverySyncNow(
+                                context = appContext,
+                                includeAuth401 = false,
+                                reasonFa = triggerReason
+                            )
+                        }
+                    }
+                }
             }
         }
         // Immediate startup server check + 15-second live sync & connectivity probe loop
@@ -121,10 +196,19 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                 runCatching {
                     val current = settingsRepo.readSettings()
                     if (current.isConfigured && isOnlineState.value) {
-                        if (current.serviceEnabled) {
-                            ForwardWorker.runSweepNow(appContext)
+                        val pingOk = GatewayApiClient.pingServer(current.endpointUrl, current.gatewayToken)
+                        if (pingOk && current.serviceEnabled) {
+                            val hasRecoveryWork = current.autoSyncAfterErrors && logDao.getRecoveryCandidateCount() > 0
+                            if (hasRecoveryWork) {
+                                ForwardWorker.runRecoverySyncNow(
+                                    context = appContext,
+                                    includeAuth401 = false,
+                                    reasonFa = "همگام‌سازی خودکار صف خطاها"
+                                )
+                            } else {
+                                ForwardWorker.runSweepNow(appContext)
+                            }
                         }
-                        GatewayApiClient.pingServer(current.endpointUrl, current.gatewayToken)
                     }
                 }
             }
@@ -162,6 +246,27 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                 previousLevel = uiStatus.level
             }
         }
+        // Automated foreground batch-processing retry ticker: fires when countdown reaches 00:00
+        viewModelScope.launch {
+            while (isActive) {
+                delay(1_000L)
+                runCatching {
+                    val current = settingsRepo.readSettings()
+                    if (!current.isConfigured || !current.serviceEnabled || !isOnlineState.value) {
+                        return@runCatching
+                    }
+                    if (BatchRetryTracker.stateFlow.value.isBatchRunning ||
+                        ServerHealthTracker.postErrorSyncFlow.value.isSyncing
+                    ) {
+                        return@runCatching
+                    }
+                    val dueAt = BatchRetryPolicy.earliestAutoRetryAtMs(allLogs.value)
+                    if (dueAt != null && dueAt <= System.currentTimeMillis()) {
+                        ForwardWorker.runBatchRetryNow(appContext)
+                    }
+                }
+            }
+        }
     }
 
     private suspend fun probeServerSilently() {
@@ -173,21 +278,95 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private suspend fun syncConnectionAfterErrorsInternal(
+        includeAuth401: Boolean,
+        reasonFa: String,
+        showFeedbackSnackbar: Boolean
+    ) {
+        val current = settingsRepo.readSettings()
+        if (!current.isConfigured) {
+            if (showFeedbackSnackbar) {
+                _snackbarMessage.value = "ابتدا آدرس سرور و توکن را در تنظیمات وارد کنید."
+            }
+            return
+        }
+        if (!InternetWatchService.checkCurrentlyOnline(appContext) && !isOnlineState.value) {
+            if (showFeedbackSnackbar) {
+                _snackbarMessage.value = "اتصال اینترنت برقرار نیست؛ پس از وصل شدن خودکار همگام‌سازی می‌شود."
+            }
+            if (current.autoSyncAfterErrors) {
+                ForwardWorker.schedulePostErrorRecoveryWorker(
+                    context = appContext,
+                    includeAuth401 = includeAuth401,
+                    reasonFa = reasonFa
+                )
+            }
+            return
+        }
+        if (showFeedbackSnackbar) {
+            _snackbarMessage.value = "در حال بررسی اتصال و همگام‌سازی خطاها..."
+        }
+        val ok = GatewayApiClient.pingServer(current.endpointUrl, current.gatewayToken)
+        if (!ok) {
+            if (showFeedbackSnackbar) {
+                _snackbarMessage.value = "سرور هنوز در دسترس نیست؛ صف خطاها در حالت انتظار باقی ماند."
+            }
+            if (current.autoSyncAfterErrors) {
+                ForwardWorker.schedulePostErrorRecoveryWorker(
+                    context = appContext,
+                    includeAuth401 = includeAuth401,
+                    delayMs = 20_000L,
+                    reasonFa = reasonFa
+                )
+            }
+            return
+        }
+        if (!current.serviceEnabled) {
+            if (showFeedbackSnackbar) {
+                _snackbarMessage.value = "اتصال سرور برقرار است؛ برای ارسال پیامک‌ها سرویس اصلی را روشن کنید."
+            }
+            return
+        }
+        val outcome = ForwardWorker.runRecoverySyncNow(
+            context = appContext,
+            includeAuth401 = includeAuth401,
+            reasonFa = reasonFa
+        )
+        if (showFeedbackSnackbar) {
+            val syncState = ServerHealthTracker.postErrorSyncFlow.value
+            _snackbarMessage.value = when {
+                syncState.lastRecoveryRecoveredCount > 0 && syncState.lastRecoveryRemainingErrors == 0 ->
+                    "اتصال برقرار شد و ${syncState.lastRecoveryRecoveredCount} مورد با موفقیت همگام‌سازی گردید."
+                syncState.lastRecoveryRecoveredCount > 0 ->
+                    "${syncState.lastRecoveryRecoveredCount} مورد همگام‌سازی شد • ${syncState.lastRecoveryRemainingErrors} مورد همچنان در صف خطا است."
+                outcome == ForwardWorker.WorkOutcome.SUCCESS ->
+                    "اتصال سرور پایدار است و خطای معلقی وجود ندارد."
+                else ->
+                    "بررسی انجام شد؛ برخی موارد نیازمند تلاش مجدد هستند."
+            }
+        }
+    }
+
     fun checkServerConnectionNow() {
         viewModelScope.launch {
-            val current = settingsRepo.readSettings()
-            if (!current.isConfigured) {
-                _snackbarMessage.value = "ابتدا آدرس سرور و توکن را در تنظیمات وارد کنید."
-                return@launch
-            }
-            if (!InternetWatchService.checkCurrentlyOnline(appContext) && !isOnlineState.value) {
-                _snackbarMessage.value = "اتصال اینترنت دستگاه برقرار نیست."
-                return@launch
-            }
-            val ok = GatewayApiClient.pingServer(current.endpointUrl, current.gatewayToken)
-            if (ok && current.serviceEnabled) {
-                ForwardWorker.runSweepNow(appContext)
-            }
+            syncConnectionAfterErrorsInternal(
+                includeAuth401 = false,
+                reasonFa = "بررسی لحظه‌ای اتصال و همگام‌سازی",
+                showFeedbackSnackbar = false
+            )
+        }
+    }
+
+    fun syncConnectionAfterErrors(
+        includeAuth401: Boolean = false,
+        reasonFa: String = "همگام‌سازی دستی اتصال پس از خطا"
+    ) {
+        viewModelScope.launch {
+            syncConnectionAfterErrorsInternal(
+                includeAuth401 = includeAuth401,
+                reasonFa = reasonFa,
+                showFeedbackSnackbar = true
+            )
         }
     }
 
@@ -248,6 +427,44 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setNotifyOnApprovedInvoice(enabled: Boolean) {
+        settingsRepo.setNotifyOnApprovedInvoice(enabled)
+        _snackbarMessage.value = if (enabled) {
+            "اعلان و اعلام مبلغ فاکتورهای تأییدشده فعال شد."
+        } else {
+            "اعلان فاکتورهای تأییدشده غیرفعال شد."
+        }
+    }
+
+    fun setAutoClearOldLogsEnabled(enabled: Boolean) {
+        settingsRepo.setAutoClearOldLogsEnabled(enabled)
+        if (enabled) {
+            ForwardWorker.schedulePeriodicLogCleanupWorker(appContext)
+            viewModelScope.launch {
+                val deleted = ForwardWorker.runOldLogsCleanupNow(appContext, forceRun15Day = false)
+                _snackbarMessage.value = if (deleted > 0) {
+                    "پاکسازی خودکار ۱۵ روزه فعال شد و $deleted لاگ قدیمی برای بهینه‌سازی حافظه حذف گردید."
+                } else {
+                    "پاکسازی خودکار لاگ‌های قدیمی‌تر از ۱۵ روز برای بهینه‌سازی حافظه فعال شد."
+                }
+            }
+        } else {
+            ForwardWorker.cancelPeriodicLogCleanupWorker(appContext)
+            _snackbarMessage.value = "پاکسازی خودکار ۱۵ روزه لاگ‌ها غیرفعال شد."
+        }
+    }
+
+    fun clearLogsOlderThan15DaysNow() {
+        viewModelScope.launch {
+            val deleted = ForwardWorker.runOldLogsCleanupNow(appContext, forceRun15Day = true)
+            _snackbarMessage.value = if (deleted > 0) {
+                "$deleted لاگ قدیمی‌تر از ۱۵ روز برای بهینه‌سازی حافظه پاک شد."
+            } else {
+                "هیچ لاگ قدیمی‌تر از ۱۵ روز برای پاکسازی یافت نشد."
+            }
+        }
+    }
+
     fun setSensitiveSmsMinToman(minToman: Long) {
         val clean = minToman.coerceAtLeast(0L)
         settingsRepo.setSensitiveSmsMinToman(clean)
@@ -271,6 +488,75 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setThemeMode(mode: AppThemeMode) {
+        settingsRepo.setThemeMode(mode)
+        _snackbarMessage.value = when (mode) {
+            AppThemeMode.MIDNIGHT_OLED ->
+                "حالت مشکی خالص (Midnight OLED) برای صرفه‌جویی باتری AMOLED فعال شد."
+            AppThemeMode.DARK_NAVY ->
+                "تم سرمه‌ای تیره (پیش‌فرض) فعال شد."
+        }
+    }
+
+    fun setMidnightOledEnabled(enabled: Boolean) {
+        setThemeMode(if (enabled) AppThemeMode.MIDNIGHT_OLED else AppThemeMode.DARK_NAVY)
+    }
+
+    fun setCustomFilterRulesEnabled(enabled: Boolean) {
+        settingsRepo.setCustomFilterRulesEnabled(enabled)
+        _snackbarMessage.value = if (enabled) {
+            "فیلترهای سفارشی پیامک برای کاهش بار سرور فعال شدند."
+        } else {
+            "فیلترهای سفارشی موقتاً غیرفعال شدند."
+        }
+    }
+
+    fun addCustomFilterRule(
+        name: String,
+        pattern: String,
+        target: FilterTarget,
+        action: FilterAction
+    ) {
+        val created = settingsRepo.addCustomFilterRule(name, pattern, target, action)
+        _snackbarMessage.value = if (created != null) {
+            "قانون فیلتر «${created.displayTitle()}» ذخیره شد."
+        } else {
+            "لطفاً عبارت یا مقدار معتبر برای قانون وارد کنید."
+        }
+    }
+
+    fun toggleCustomFilterRule(ruleId: String) {
+        settingsRepo.toggleCustomFilterRule(ruleId)
+    }
+
+    fun removeCustomFilterRule(ruleId: String) {
+        settingsRepo.removeCustomFilterRule(ruleId)
+        _snackbarMessage.value = "قانون فیلتر حذف شد."
+    }
+
+    fun setAutoSyncAfterErrors(enabled: Boolean) {
+        settingsRepo.setAutoSyncAfterErrors(enabled)
+        _snackbarMessage.value = if (enabled) {
+            "همگام‌سازی خودکار اتصال بعد از خطاها فعال شد."
+        } else {
+            "همگام‌سازی خودکار اتصال بعد از خطاها غیرفعال شد."
+        }
+        if (enabled) {
+            viewModelScope.launch {
+                val hasCandidates = logDao.getRecoveryCandidateCount() > 0
+                if (hasCandidates && settingsRepo.readSettings().isConfigured && isOnlineState.value) {
+                    ForwardWorker.runRecoverySyncNow(
+                        context = appContext,
+                        includeAuth401 = false,
+                        reasonFa = "فعال‌سازی همگام‌سازی خودکار"
+                    )
+                }
+            }
+        } else {
+            ForwardWorker.cancelPostErrorRecoveryWorker(appContext)
+        }
+    }
+
     fun saveSettings(endpointUrl: String, token: String, localMaxTomanStr: String) {
         val validationError = GatewayApiClient.validateInputConfig(endpointUrl, token)
         if (validationError != null) {
@@ -281,8 +567,17 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         settingsRepo.saveEndpointAndToken(endpointUrl, token, maxToman)
         _snackbarMessage.value = "تنظیمات با رمزنگاری AES-256 ذخیره شد."
         viewModelScope.launch {
-            probeServerSilently()
-            ForwardWorker.runSweepNow(appContext)
+            val current = settingsRepo.readSettings()
+            if (current.autoSyncAfterErrors && current.serviceEnabled && logDao.getRecoveryCandidateCount() > 0) {
+                ForwardWorker.runRecoverySyncNow(
+                    context = appContext,
+                    includeAuth401 = true,
+                    reasonFa = "به‌روزرسانی تنظیمات و توکن"
+                )
+            } else {
+                probeServerSilently()
+                ForwardWorker.runSweepNow(appContext)
+            }
         }
     }
 
@@ -302,6 +597,14 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                         httpCode = result.httpCode,
                         status = result.status
                     )
+                    val current = settingsRepo.readSettings()
+                    if (current.autoSyncAfterErrors && current.serviceEnabled && logDao.getRecoveryCandidateCount() > 0) {
+                        ForwardWorker.runRecoverySyncNow(
+                            context = appContext,
+                            includeAuth401 = true,
+                            reasonFa = "تأیید اتصال sms-in"
+                        )
+                    }
                 }
                 is GatewayResult.PermanentFailure -> {
                     _testConnectionState.value = TestConnectionUiState.Error(
@@ -346,6 +649,14 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                         autoMaxToman = res.autoMaxToman,
                         sampleItems = res.items.take(5)
                     )
+                    val current = settingsRepo.readSettings()
+                    if (current.autoSyncAfterErrors && current.serviceEnabled && logDao.getRecoveryCandidateCount() > 0) {
+                        ForwardWorker.runRecoverySyncNow(
+                            context = appContext,
+                            includeAuth401 = true,
+                            reasonFa = "تأیید اتصال sms-pending"
+                        )
+                    }
                 }
                 is PendingFetchResult.Unauthorized401 -> {
                     _testConnectionState.value = TestConnectionUiState.Error(401, res.message)
@@ -393,6 +704,12 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                 _snackbarMessage.value = "پیامک تبلیغاتی یا حاوی لینک تشخیص داده شد و در لاگ ثبت نمی‌شود."
                 return@launch
             }
+            val filterMatch = SmsFilterEngine.evaluate(
+                sender = bank,
+                rawBody = rawBody,
+                amountMinor = parsed.amountMinor,
+                settings = settingsRepo.readSettings()
+            )
             val detected = SmsParser.detectBank(bank, rawBody)
             // a simulated SMS is only parsed and shown: it must never be sent to the server (it could approve a real order)
             val initialStatus = SmsStatus.IGNORED
@@ -404,16 +721,21 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                 body = rawBody,
                 normalized = normalized,
                 amountMinor = parsed.amountMinor,
-                reason = if (parsed.amountMinor != null) "test_deposit_not_sent" else parsed.reason,
+                reason = if (filterMatch != null) "custom_filter"
+                else if (parsed.amountMinor != null) "test_deposit_not_sent"
+                else parsed.reason,
                 status = initialStatus.name,
                 receivedMs = now,
                 storedMs = now,
-                decidedMs = now
+                decidedMs = now,
+                lastError = filterMatch?.reasonDetailFa
             )
 
             val id = logDao.insertIgnoreDuplicate(record)
             if (id == -1L) {
                 _snackbarMessage.value = "پیامک تکراری نادیده گرفته شد."
+            } else if (filterMatch != null) {
+                _snackbarMessage.value = "تست با قانون فیلتر سفارشی مسدود شد (${filterMatch.rule.displayTitle()})."
             } else if (parsed.amountMinor == null) {
                 _snackbarMessage.value = "پیامک غیر واریزی تشخیص داده شد (reason=${parsed.reason})."
             } else {
@@ -451,6 +773,13 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 _snackbarMessage.value = "در حال ارسال فرمان تأیید سفارش $finalPublicId به سرور..."
                 ForwardWorker.runManualApproveNow(appContext, record.id)
+                val updated = logDao.getById(record.id)
+                if (updated?.statusEnum == SmsStatus.MATCHED) {
+                    val priceToman = updated.amountMinor?.let { SmsParser.formatToman(it) } ?: "۰"
+                    _snackbarMessage.value = "✅ فاکتور ${updated.matchedId ?: finalPublicId} با مبلغ $priceToman تومان ثبت و تأیید شد."
+                } else if (!updated?.lastError.isNullOrBlank()) {
+                    _snackbarMessage.value = "نتیجهٔ تأیید: ${updated?.lastError}"
+                }
             }
         }
     }
@@ -499,13 +828,38 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
 
     fun retryAllFailedLogs() {
         viewModelScope.launch {
+            val pendingIds = logDao.getRetryPendingRecords().map { it.id }
             val resetCount = logDao.resetFailedAndErrorLogsForRetry()
             _snackbarMessage.value = if (resetCount > 0) {
-                "در حال تلاش مجدد برای ارسال $resetCount پیامک ناموفق به سرور..."
+                "در حال پردازش دسته‌ای برای ارسال مجدد $resetCount پیامک..."
             } else {
                 "در حال بررسی و ارسال مجدد صف به سرور..."
             }
-            ForwardWorker.runSweepNow(appContext)
+            if (pendingIds.isNotEmpty()) {
+                ForwardWorker.runBatchRetryNow(appContext, pendingIds)
+            } else {
+                ForwardWorker.runSweepNow(appContext)
+            }
+        }
+    }
+
+    fun retrySelectedFailedBatch(selectedIds: List<Long>) {
+        if (selectedIds.isEmpty()) return
+        viewModelScope.launch {
+            logDao.markIdsForImmediateBatchRetry(selectedIds)
+            _snackbarMessage.value = "در حال همگام‌سازی دسته‌ای ${selectedIds.size} پیامک انتخاب‌شده..."
+            ForwardWorker.runBatchRetryNow(appContext, selectedIds)
+            val state = batchRetryState.value
+            _snackbarMessage.value = when {
+                state.lastBatchSucceededCount > 0 && state.lastBatchFailedCount == 0 ->
+                    "همگام‌سازی دسته‌ای موفق بود (${state.lastBatchSucceededCount} مورد تأیید شد)."
+                state.lastBatchSucceededCount > 0 ->
+                    "نتیجهٔ دسته: ${state.lastBatchSucceededCount} موفق • ${state.lastBatchFailedCount} نیازمند تلاش مجدد."
+                state.lastBatchProcessedCount > 0 ->
+                    "خطا در ارسال دسته‌ای؛ زمانبندی تلاش مجدد خودکار بعدی ثبت شد."
+                else ->
+                    "بررسی دسته‌ای انجام شد."
+            }
         }
     }
 
@@ -533,7 +887,8 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             logDao.clearAllLogs()
             logDao.clearAllInvoices()
-            _snackbarMessage.value = "تمام لاگ‌ها و فاکتورهای موقت پاک شدند."
+            logDao.clearAllRetryEvents()
+            _snackbarMessage.value = "تمام لاگ‌ها، آمارها و فاکتورهای موقت پاک شدند."
         }
     }
 
@@ -584,6 +939,10 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                         )
                         _snackbarMessage.value = "تطبیق هوشمند در لاگ یافت شد (${SmsParser.formatToman(dueMinor)} تومان)؛ در حال ارسال تأیید فاکتور $cleanId به سرور..."
                         ForwardWorker.runManualApproveNow(appContext, rec.id)
+                        val updated = logDao.getById(rec.id)
+                        if (updated?.statusEnum == SmsStatus.MATCHED) {
+                            _snackbarMessage.value = "✅ فاکتور $cleanId با مبلغ ${SmsParser.formatToman(dueMinor)} تومان ثبت و تأیید شد."
+                        }
                     } else {
                         logDao.update(
                             rec.copy(
@@ -595,8 +954,23 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                                 lastError = null
                             )
                         )
-                        logDao.markInvoiceMatched(cleanId, rec.id)
-                        _snackbarMessage.value = "فاکتور $cleanId با واریز ${SmsParser.formatToman(dueMinor)} تومان در لاگ مطابقت داشت و بلافاصله تأیید شد!"
+                        logDao.recordApprovedInvoice(
+                            publicId = cleanId,
+                            kind = kind,
+                            dueMinor = dueMinor,
+                            smsId = rec.id,
+                            bankTitle = rec.bankTitle,
+                            matchedAtMs = nowMs
+                        )
+                        NotificationHelper.notifyInvoiceApproved(
+                            context = appContext,
+                            publicId = cleanId,
+                            kind = kind,
+                            amountMinor = dueMinor,
+                            bankTitle = rec.bankTitle,
+                            recordId = rec.id
+                        )
+                        _snackbarMessage.value = "✅ فاکتور $cleanId با قیمت ${SmsParser.formatToman(dueMinor)} تومان در لاگ مطابقت داشت و ثبت و تأیید شد!"
                     }
                 }
                 else -> {

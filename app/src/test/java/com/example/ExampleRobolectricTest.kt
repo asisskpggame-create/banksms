@@ -36,46 +36,58 @@ class ExampleRobolectricTest {
         val db = AppDatabase.getInstance(context)
         assertNotNull(db.logDao())
 
-        val vm = AsisViewModel.provideFactory(app).create(AsisViewModel::class.java)
-        assertNotNull(vm.settingsState.value)
+        val store = androidx.lifecycle.ViewModelStore()
+        try {
+            val vm = androidx.lifecycle.ViewModelProvider(
+                store,
+                AsisViewModel.provideFactory(app)
+            )[AsisViewModel::class.java]
+            assertNotNull(vm.settingsState.value)
 
-        // Verify Mirza 33-bank catalog and default pre-populated "بانک قرض الحسنه" (B.QMEHRIRAN) card
-        assertEquals(33, com.example.ui.BankVisualCatalog.MIRZA_BANKS.size)
-        val initialCards = repo.readSettings().registeredBankCards
-        assertTrue(initialCards.any { it.senderNumber == "B.QMEHRIRAN" && it.bankTitle == "بانک قرض الحسنه" })
+            // Verify Mirza 33-bank catalog and default pre-populated "بانک قرض الحسنه" (B.QMEHRIRAN) card
+            assertEquals(33, com.example.ui.BankVisualCatalog.MIRZA_BANKS.size)
+            val initialCards = repo.readSettings().registeredBankCards
+            assertTrue(initialCards.any { it.senderNumber == "B.QMEHRIRAN" && it.bankTitle == "بانک قرض الحسنه" })
 
-        // Verify adding a custom bank sender card updates SmsParser custom sender detection
-        vm.addRegisteredBankCard("mellat", "بانک ملت", "98300017")
-        val updatedCards = repo.readSettings().registeredBankCards
-        assertTrue(updatedCards.any { it.senderNumber == "98300017" && it.bankCode == "mellat" })
-        assertEquals("mellat", com.example.data.SmsParser.detectBank("98300017", "").code)
+            // Verify adding a custom bank sender card updates SmsParser custom sender detection
+            vm.addRegisteredBankCard("mellat", "بانک ملت", "98300017")
+            val updatedCards = repo.readSettings().registeredBankCards
+            assertTrue(updatedCards.any { it.senderNumber == "98300017" && it.bankCode == "mellat" })
+            assertEquals("mellat", com.example.data.SmsParser.detectBank("98300017", "").code)
 
-        // Verify loadReceivedSmsSenders returns bank shortcodes prioritized first
-        val receivedSenders = vm.loadReceivedSmsSenders()
-        assertTrue(receivedSenders.isNotEmpty())
-        assertTrue(receivedSenders.contains("B.QMEHRIRAN"))
-        assertTrue(receivedSenders.contains("+98200033"))
-        val firstDetected = com.example.data.SmsParser.detectBank(receivedSenders.first(), "")
-        assertNotNull(com.example.ui.BankVisualCatalog.findByCode(firstDetected.code))
+            // Verify loadReceivedSmsSenders returns bank shortcodes prioritized first
+            val receivedSenders = vm.loadReceivedSmsSenders()
+            assertTrue(receivedSenders.isNotEmpty())
+            assertTrue(receivedSenders.contains("B.QMEHRIRAN"))
+            assertTrue(receivedSenders.contains("+98200033"))
+            val firstDetected = com.example.data.SmsParser.detectBank(receivedSenders.first(), "")
+            assertNotNull(com.example.ui.BankVisualCatalog.findByCode(firstDetected.code))
 
-        // Verify WorkManager OneTimeWorkRequest builders do not throw IllegalArgumentException
-        ForwardWorker.enqueueMatcherSweep(context)
-        ForwardWorker.enqueueManualApprove(context, recordId = 1L)
+            // Verify WorkManager OneTimeWorkRequest builders do not throw IllegalArgumentException
+            ForwardWorker.enqueueMatcherSweep(context)
+            ForwardWorker.enqueueManualApprove(context, recordId = 1L)
+        } finally {
+            store.clear()
+        }
     }
 
     @Test
     fun `launch MainActivity and instantiate AsisViewModel via default ViewModelProvider`() {
         val controller = org.robolectric.Robolectric.buildActivity(MainActivity::class.java).create()
-        val activity = controller.get()
-        assertNotNull(activity)
+        try {
+            val activity = controller.get()
+            assertNotNull(activity)
 
-        val vmViaSavedState = androidx.lifecycle.ViewModelProvider(activity)[AsisViewModel::class.java]
-        assertNotNull(vmViaSavedState.settingsState.value)
+            val vmViaSavedState = androidx.lifecycle.ViewModelProvider(activity)[AsisViewModel::class.java]
+            assertNotNull(vmViaSavedState.settingsState.value)
 
-        // Force Room openHelper + query execution to catch any schema/KSP/migration/SQL issues
-        val db = AppDatabase.getInstance(activity.applicationContext)
-        val writable = db.openHelper.writableDatabase
-        assertTrue(writable.isOpen)
+            // Force Room openHelper + query execution to catch any schema/KSP/migration/SQL issues
+            val db = AppDatabase.getInstance(activity.applicationContext)
+            val writable = db.openHelper.writableDatabase
+            assertTrue(writable.isOpen)
+        } finally {
+            controller.destroy()
+        }
     }
 
     @Test
@@ -159,7 +171,7 @@ class ExampleRobolectricTest {
             val resetCount = db.logDao().resetFailedAndErrorLogsForRetry()
             assertEquals(1, resetCount)
             val retriedRec = db.logDao().getById(recordId)
-            assertEquals(com.example.data.SmsStatus.NEW.name, retriedRec?.status)
+            assertEquals(com.example.data.SmsStatus.RETRY.name, retriedRec?.status)
             org.junit.Assert.assertNull(retriedRec?.lastError)
 
             // Verify SmartAmountMatcher:
@@ -397,5 +409,849 @@ class ExampleRobolectricTest {
                 smsBody = highDepositSms
             )
         )
+    }
+
+    @Test
+    fun `verify automated batch retry backoff policy, countdown formatting, and selective DB batch retry`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = AppDatabase.getInstance(app)
+        val dao = db.logDao()
+        com.example.network.BatchRetryTracker.resetForTests()
+
+        // 1. Exponential backoff checks
+        assertEquals(15_000L, com.example.network.BatchRetryPolicy.backoffMsForAttempt(1))
+        assertEquals(30_000L, com.example.network.BatchRetryPolicy.backoffMsForAttempt(2))
+        assertEquals(60_000L, com.example.network.BatchRetryPolicy.backoffMsForAttempt(3))
+        assertEquals(120_000L, com.example.network.BatchRetryPolicy.backoffMsForAttempt(4))
+        assertEquals(300_000L, com.example.network.BatchRetryPolicy.backoffMsForAttempt(6))
+        org.junit.Assert.assertNull(com.example.network.BatchRetryPolicy.computeNextRetryAtMs(8))
+        assertEquals("01:05", com.example.network.BatchRetryPolicy.formatCountdownMmSs(65_000L))
+        assertEquals("00:15", com.example.network.BatchRetryPolicy.formatCountdownMmSs(14_200L))
+
+        kotlinx.coroutines.runBlocking {
+            dao.clearAllLogs()
+            val nowMs = System.currentTimeMillis()
+            val id1 = dao.insertIgnoreDuplicate(
+                com.example.data.SmsRecord(
+                    fingerprint = "fp_batch_1",
+                    bank = "98200033",
+                    bankTitle = "بانک ملت",
+                    body = "واریز 10,000,000 ریال",
+                    normalized = "واریز 10,000,000 ریال",
+                    amountMinor = 10_000_000L,
+                    reason = "",
+                    status = com.example.data.SmsStatus.FAILED.name,
+                    attempts = 1,
+                    httpCode = 503,
+                    lastError = "Timeout",
+                    nextRetryAtMs = null
+                )
+            )
+            val id2 = dao.insertIgnoreDuplicate(
+                com.example.data.SmsRecord(
+                    fingerprint = "fp_batch_2",
+                    bank = "98200070",
+                    bankTitle = "بانک تجارت",
+                    body = "واریز 20,000,000 ریال",
+                    normalized = "واریز 20,000,000 ریال",
+                    amountMinor = 20_000_000L,
+                    reason = "",
+                    status = com.example.data.SmsStatus.RETRY.name,
+                    attempts = 2,
+                    httpCode = 502,
+                    lastError = "Bad Gateway",
+                    nextRetryAtMs = nowMs + 45_000L
+                )
+            )
+
+            val pending = dao.getRetryPendingRecords()
+            assertEquals(2, pending.size)
+            assertEquals(nowMs + 45_000L, com.example.network.BatchRetryPolicy.earliestAutoRetryAtMs(pending))
+
+            // Manually trigger selective retry only on id1
+            val updatedRows = dao.markIdsForImmediateBatchRetry(listOf(id1), nowMs)
+            assertEquals(1, updatedRows)
+            val rec1 = dao.getById(id1)
+            val rec2 = dao.getById(id2)
+            assertEquals(com.example.data.SmsStatus.RETRY.name, rec1?.status)
+            org.junit.Assert.assertNull(rec1?.lastError)
+            assertEquals(nowMs + 45_000L, rec2?.nextRetryAtMs)
+
+            // Execute batch retry worker when server is unconfigured -> reschedules backoff & updates tracker
+            SettingsRepo.getInstance(app).saveEndpointAndToken("", "")
+            val outcome = ForwardWorker.runBatchRetryNow(app, listOf(id1))
+            assertEquals(ForwardWorker.WorkOutcome.RETRY, outcome)
+            val trackerState = com.example.network.BatchRetryTracker.stateFlow.value
+            org.junit.Assert.assertFalse(trackerState.isBatchRunning)
+            assertEquals(1, trackerState.lastBatchProcessedCount)
+            assertEquals(1, trackerState.lastBatchFailedCount)
+            assertNotNull(trackerState.nextScheduledWorkAtMs)
+        }
+    }
+
+    @Test
+    fun `verify 7-day auto-retry health analytics, Room telemetry persistence, and trend delta`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = AppDatabase.getInstance(app)
+        val dao = db.logDao()
+
+        val cal = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 12)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        val nowNoonMs = cal.timeInMillis
+        val dayMs = 86_400_000L
+
+        // Empty state -> NO_DATA with 7 chronological days
+        val emptySummary = com.example.network.RetryHealthAnalytics.compute7DaySummary(
+            logs = emptyList(),
+            events = emptyList(),
+            nowMs = nowNoonMs
+        )
+        assertEquals(7, emptySummary.days.size)
+        assertEquals(0, emptySummary.totalAttempts7d)
+        assertEquals(com.example.network.ConnectivityHealthTier.NO_DATA, emptySummary.healthTier)
+        org.junit.Assert.assertNull(emptySummary.overallSuccessRatePercent)
+
+        kotlinx.coroutines.runBlocking {
+            dao.clearAllLogs()
+            dao.clearAllRetryEvents()
+
+            // Insert explicit retry telemetry events into Room across the last 7 days:
+            // Day -5 (early window): 1 success, 1 failure (50%)
+            // Day -1 (yesterday, recent window): 3 successes, 0 failures (100%)
+            // Day 0 (today, recent window): 4 successes, 0 failures (100%)
+            dao.insertRetryAttemptEvents(
+                listOf(
+                    com.example.data.RetryAttemptEventEntity(
+                        smsRecordId = 101L,
+                        attemptedAtMs = nowNoonMs - 5L * dayMs,
+                        succeeded = false,
+                        httpCode = 502,
+                        isAutoRetry = true
+                    ),
+                    com.example.data.RetryAttemptEventEntity(
+                        smsRecordId = 101L,
+                        attemptedAtMs = nowNoonMs - 5L * dayMs + 60_000L,
+                        succeeded = true,
+                        httpCode = 200,
+                        isAutoRetry = true
+                    ),
+                    com.example.data.RetryAttemptEventEntity(
+                        smsRecordId = 102L,
+                        attemptedAtMs = nowNoonMs - 1L * dayMs,
+                        succeeded = true,
+                        httpCode = 200,
+                        isAutoRetry = true
+                    ),
+                    com.example.data.RetryAttemptEventEntity(
+                        smsRecordId = 103L,
+                        attemptedAtMs = nowNoonMs - 1L * dayMs + 30_000L,
+                        succeeded = true,
+                        httpCode = 200,
+                        isAutoRetry = true
+                    ),
+                    com.example.data.RetryAttemptEventEntity(
+                        smsRecordId = 104L,
+                        attemptedAtMs = nowNoonMs - 1L * dayMs + 60_000L,
+                        succeeded = true,
+                        httpCode = 200,
+                        isAutoRetry = true
+                    ),
+                    com.example.data.RetryAttemptEventEntity(
+                        smsRecordId = 105L,
+                        attemptedAtMs = nowNoonMs,
+                        succeeded = true,
+                        httpCode = 200,
+                        isAutoRetry = true
+                    ),
+                    com.example.data.RetryAttemptEventEntity(
+                        smsRecordId = 106L,
+                        attemptedAtMs = nowNoonMs + 10_000L,
+                        succeeded = true,
+                        httpCode = 200,
+                        isAutoRetry = true
+                    ),
+                    com.example.data.RetryAttemptEventEntity(
+                        smsRecordId = 107L,
+                        attemptedAtMs = nowNoonMs + 20_000L,
+                        succeeded = true,
+                        httpCode = 200,
+                        isAutoRetry = true
+                    ),
+                    com.example.data.RetryAttemptEventEntity(
+                        smsRecordId = 108L,
+                        attemptedAtMs = nowNoonMs + 30_000L,
+                        succeeded = true,
+                        httpCode = 200,
+                        isAutoRetry = true
+                    ),
+                    // Out-of-window (10 days ago) should be ignored by sinceMs query & 7-day aggregator
+                    com.example.data.RetryAttemptEventEntity(
+                        smsRecordId = 99L,
+                        attemptedAtMs = nowNoonMs - 10L * dayMs,
+                        succeeded = false,
+                        httpCode = 500,
+                        isAutoRetry = true
+                    )
+                )
+            )
+
+            // Include a legacy retried SmsRecord without explicit events + one WITH explicit event (id = 101L)
+            val legacyRecords = listOf(
+                com.example.data.SmsRecord(
+                    id = 101L, // already represented in events -> must not double-count
+                    fingerprint = "fp_event_covered",
+                    bank = "98200033",
+                    bankTitle = "بانک ملت",
+                    body = "واریز 1,000,000 ریال",
+                    normalized = "واریز 1,000,000 ریال",
+                    amountMinor = 1_000_000L,
+                    reason = "",
+                    status = com.example.data.SmsStatus.MATCHED.name,
+                    attempts = 2,
+                    decidedMs = nowNoonMs
+                ),
+                com.example.data.SmsRecord(
+                    id = 202L, // legacy record -> contributes 1 failure today
+                    fingerprint = "fp_legacy_failed",
+                    bank = "98200070",
+                    bankTitle = "بانک تجارت",
+                    body = "واریز 5,000,000 ریال",
+                    normalized = "واریز 5,000,000 ریال",
+                    amountMinor = 5_000_000L,
+                    reason = "",
+                    status = com.example.data.SmsStatus.FAILED.name,
+                    attempts = 1,
+                    decidedMs = nowNoonMs
+                )
+            )
+
+            val recentEvents = dao.getRecentRetryEvents(nowNoonMs - 7L * dayMs)
+            assertEquals(9, recentEvents.size)
+
+            val summary = com.example.network.RetryHealthAnalytics.compute7DaySummary(
+                logs = legacyRecords,
+                events = recentEvents,
+                nowMs = nowNoonMs
+            )
+
+            // Total 7d = 9 explicit events + 1 legacy failure = 10; 8 succeeded, 2 failed => 80% (GOOD)
+            assertEquals(10, summary.totalAttempts7d)
+            assertEquals(8, summary.succeededAttempts7d)
+            assertEquals(2, summary.failedAttempts7d)
+            assertEquals(80f, summary.overallSuccessRatePercent ?: -1f, 0.01f)
+            assertEquals(com.example.network.ConnectivityHealthTier.GOOD, summary.healthTier)
+            // Trend delta: recent 3 days = 7/8 = 87.5% minus early 4 days = 1/2 = 50% -> +37.5%
+            assertEquals(37.5f, summary.trendDeltaPercent ?: -1f, 0.01f)
+
+            // Verify day buckets alignment
+            assertEquals(50f, summary.days[1].successRatePercent ?: -1f, 0.01f) // day -5
+            assertEquals(100f, summary.days[5].successRatePercent ?: -1f, 0.01f) // yesterday
+            assertEquals("امروز", summary.days[6].dayLabel)
+            assertEquals(80f, summary.days[6].successRatePercent ?: -1f, 0.01f) // today (4/5)
+
+            // Verify prune & clear
+            val pruned = dao.deleteOldRetryEvents(nowNoonMs - 7L * dayMs)
+            assertEquals(1, pruned)
+            dao.clearAllRetryEvents()
+            assertEquals(0, dao.getRecentRetryEvents(0L).size)
+        }
+    }
+
+    @Test
+    fun `verify Dark Navy and Midnight Black OLED theme mode persistence and toggling`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val repo = SettingsRepo.getInstance(app)
+        val store = androidx.lifecycle.ViewModelStore()
+        try {
+            val vm = androidx.lifecycle.ViewModelProvider(
+                store,
+                AsisViewModel.provideFactory(app)
+            )[AsisViewModel::class.java]
+
+            // Default starts cleanly in DARK_NAVY
+            repo.setThemeMode(com.example.data.AppThemeMode.DARK_NAVY)
+            assertEquals(com.example.data.AppThemeMode.DARK_NAVY, repo.readSettings().themeMode)
+            org.junit.Assert.assertFalse(repo.readSettings().isMidnightOled)
+
+            // Toggle to MIDNIGHT_OLED via ViewModel
+            vm.setThemeMode(com.example.data.AppThemeMode.MIDNIGHT_OLED)
+            assertEquals(com.example.data.AppThemeMode.MIDNIGHT_OLED, vm.settingsState.value.themeMode)
+            assertTrue(vm.settingsState.value.isMidnightOled)
+            assertEquals(com.example.data.AppThemeMode.MIDNIGHT_OLED, repo.readSettings().themeMode)
+
+            // Toggle back via boolean helper
+            vm.setMidnightOledEnabled(false)
+            assertEquals(com.example.data.AppThemeMode.DARK_NAVY, vm.settingsState.value.themeMode)
+            org.junit.Assert.assertFalse(repo.readSettings().isMidnightOled)
+        } finally {
+            store.clear()
+        }
+    }
+
+    @Test
+    fun `verify custom SMS filtering rules CRUD, normalization matching, and SmsReceiver enforcement`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val repo = SettingsRepo.getInstance(app)
+        val db = AppDatabase.getInstance(app)
+        val dao = db.logDao()
+        val store = androidx.lifecycle.ViewModelStore()
+        try {
+            val vm = androidx.lifecycle.ViewModelProvider(
+                store,
+                AsisViewModel.provideFactory(app)
+            )[AsisViewModel::class.java]
+
+            repo.setServiceEnabled(true)
+            repo.setFilterBanksEnabled(false)
+            repo.setCustomFilterRulesEnabled(true)
+
+            // Clear any pre-existing custom rules
+            repo.readSettings().customFilterRules.forEach { repo.removeCustomFilterRule(it.id) }
+
+            // 1. Add rules: keyword ("سود"), sender ("98500099"), min amount ("1000" Toman)
+            vm.addCustomFilterRule(
+                name = "حذف سود بانکی",
+                pattern = "سود",
+                target = com.example.data.FilterTarget.BODY_KEYWORD,
+                action = com.example.data.FilterAction.IGNORE_LOG_ONLY
+            )
+            vm.addCustomFilterRule(
+                name = "بلاک سرشماره تبلیغاتی",
+                pattern = "98500099",
+                target = com.example.data.FilterTarget.SENDER_NUMBER,
+                action = com.example.data.FilterAction.DROP_SILENTLY
+            )
+            vm.addCustomFilterRule(
+                name = "مبالغ خرد زیر ۱۰۰۰ تومان",
+                pattern = "1000",
+                target = com.example.data.FilterTarget.MIN_AMOUNT_TOMAN,
+                action = com.example.data.FilterAction.IGNORE_LOG_ONLY
+            )
+
+            val rulesAfterAdd = repo.readSettings().customFilterRules
+            assertEquals(3, rulesAfterAdd.size)
+
+            val keywordRule = rulesAfterAdd.first { it.target == com.example.data.FilterTarget.BODY_KEYWORD }
+            val senderRule = rulesAfterAdd.first { it.target == com.example.data.FilterTarget.SENDER_NUMBER }
+
+            // Verify Arabic/Persian normalization in SmsFilterEngine
+            val arabicMatch = com.example.data.SmsFilterEngine.evaluate(
+                sender = "98200033",
+                rawBody = "بانك ملت واريز سود سپرده 50,000 ريال",
+                amountMinor = null,
+                settings = repo.readSettings()
+            )
+            assertNotNull(arabicMatch)
+            assertEquals(keywordRule.id, arabicMatch?.rule?.id)
+
+            kotlinx.coroutines.runBlocking {
+                dao.clearAllLogs()
+                dao.clearAllInvoices()
+                val initialBlocked = repo.readSettings().blockedByCustomFiltersCount
+
+                // 2. IGNORE_LOG_ONLY keyword rule blocks server dispatch and logs IGNORED + custom_filter
+                val interestSms = "بانک ملت\nواریز سود ماهیانه\nمبلغ: 500,000ریال"
+                val interestQueued = SmsReceiver.ingestIncomingSms(
+                    appContext = app,
+                    sender = "98200033",
+                    rawBody = interestSms,
+                    sendPushAlerts = false
+                )
+                org.junit.Assert.assertFalse(interestQueued)
+                val interestFp = com.example.data.SmsParser.fingerprint("98200033", interestSms)
+                val storedInterest = dao.getByFingerprint(interestFp)
+                assertNotNull(storedInterest)
+                assertEquals(com.example.data.SmsStatus.IGNORED.name, storedInterest?.status)
+                assertEquals("custom_filter", storedInterest?.reason)
+
+                // 3. DROP_SILENTLY sender rule drops without storing in Room or dispatching
+                val spamSms = "بانک سامان\nواریز مبلغ: 2,000,000ریال"
+                val spamQueued = SmsReceiver.ingestIncomingSms(
+                    appContext = app,
+                    sender = "98500099",
+                    rawBody = spamSms,
+                    sendPushAlerts = false
+                )
+                org.junit.Assert.assertFalse(spamQueued)
+                val spamFp = com.example.data.SmsParser.fingerprint("98500099", spamSms)
+                org.junit.Assert.assertNull(dao.getByFingerprint(spamFp))
+
+                // 4. MIN_AMOUNT_TOMAN rule blocks 500 Toman (5,000 Rial) deposit, allows 50,000 Toman (500,000 Rial)
+                val microSms = "بانک تجارت\nواریز به حساب\nمبلغ: 5,000 ریال"
+                val microQueued = SmsReceiver.ingestIncomingSms(
+                    appContext = app,
+                    sender = "98200070",
+                    rawBody = microSms,
+                    sendPushAlerts = false
+                )
+                org.junit.Assert.assertFalse(microQueued)
+                val microFp = com.example.data.SmsParser.fingerprint("98200070", microSms)
+                assertEquals("custom_filter", dao.getByFingerprint(microFp)?.reason)
+
+                val normalSms = "بانک تجارت\nواریز به حساب\nمبلغ: 500,000 ریال"
+                val normalQueued = SmsReceiver.ingestIncomingSms(
+                    appContext = app,
+                    sender = "98200070",
+                    rawBody = normalSms,
+                    sendPushAlerts = false
+                )
+                assertTrue(normalQueued)
+                val normalFp = com.example.data.SmsParser.fingerprint("98200070", normalSms)
+                assertEquals(com.example.data.SmsStatus.NEW.name, dao.getByFingerprint(normalFp)?.status)
+
+                // Verify blocked counter incremented by 3
+                assertEquals(initialBlocked + 3L, repo.readSettings().blockedByCustomFiltersCount)
+
+                // 5. Disabling a rule allows previously matched SMS through
+                vm.toggleCustomFilterRule(senderRule.id)
+                val afterDisableSms = "بانک سامان\nواریز به حساب\nمبلغ: 250,000 ریال"
+                assertTrue(
+                    SmsReceiver.ingestIncomingSms(
+                        appContext = app,
+                        sender = "98500099",
+                        rawBody = afterDisableSms,
+                        sendPushAlerts = false
+                    )
+                )
+
+                // 6. Clean up custom rules
+                repo.readSettings().customFilterRules.forEach { vm.removeCustomFilterRule(it.id) }
+                assertEquals(0, repo.readSettings().customFilterRules.size)
+            }
+        } finally {
+            store.clear()
+        }
+    }
+
+    @Test
+    fun `verify post-error connection recovery sync, ServerHealthTracker trigger, and ForwardWorker recovery`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val repo = SettingsRepo.getInstance(app)
+        val db = AppDatabase.getInstance(app)
+        val dao = db.logDao()
+
+        com.example.network.ServerHealthTracker.reset()
+        com.example.network.BatchRetryTracker.resetForTests()
+
+        // 1. ServerHealthTracker failure -> recovery signal (tested before ViewModel collector consumes it)
+        com.example.network.ServerHealthTracker.recordFailure(httpCode = 502, errorMessage = "Bad Gateway")
+        assertTrue(com.example.network.ServerHealthTracker.postErrorSyncFlow.value.needsRecoverySync)
+        org.junit.Assert.assertNull(com.example.network.ServerHealthTracker.consumeServerRecoveredTrigger())
+
+        com.example.network.ServerHealthTracker.recordSuccess(httpCode = 200, latencyMs = 110L)
+        assertEquals(
+            "رفع خطای سرور و برقراری اتصال",
+            com.example.network.ServerHealthTracker.consumeServerRecoveredTrigger()
+        )
+        // One-shot trigger consumed
+        org.junit.Assert.assertNull(com.example.network.ServerHealthTracker.consumeServerRecoveredTrigger())
+
+        // 2. Settings persistence & toggle via AsisViewModel
+        val store = androidx.lifecycle.ViewModelStore()
+        try {
+            val vm = androidx.lifecycle.ViewModelProvider(
+                store,
+                AsisViewModel.provideFactory(app)
+            )[AsisViewModel::class.java]
+            assertTrue(repo.readSettings().autoSyncAfterErrors)
+            vm.setAutoSyncAfterErrors(false)
+            org.junit.Assert.assertFalse(repo.readSettings().autoSyncAfterErrors)
+            vm.setAutoSyncAfterErrors(true)
+            assertTrue(repo.readSettings().autoSyncAfterErrors)
+
+            repo.saveEndpointAndToken(
+                "https://recovery-test.example.com/panel",
+                "valid_recovery_gateway_token_123456"
+            )
+            repo.setServiceEnabled(true)
+            repo.setAutoApproveInApp(true)
+
+            val mockHttpClient = okhttp3.OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val req = chain.request()
+                    val url = req.url.toString()
+                    val now = System.currentTimeMillis()
+                    val jsonBody = when {
+                        url.endsWith("/sms-pending") -> """
+                            {
+                              "server_now_ms": $now,
+                              "match_window_hours": 24,
+                              "auto_max_toman": 0,
+                              "items": [
+                                {"kind": "order", "public_id": "ORD-REC-503", "due_minor": 1000000, "created_ms": ${now - 5000}, "early": false},
+                                {"kind": "order", "public_id": "ORD-REC-401", "due_minor": 2000000, "created_ms": ${now - 4000}, "early": false}
+                              ]
+                            }
+                        """.trimIndent()
+                        url.endsWith("/sms-approve") -> """{"ok":true,"status":"approved"}"""
+                        else -> """{"ok":true,"status":"new","approved":1}"""
+                    }
+                    okhttp3.Response.Builder()
+                        .request(req)
+                        .protocol(okhttp3.Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(okhttp3.ResponseBody.Companion.run { jsonBody.toResponseBody(null) })
+                        .build()
+                }
+                .build()
+
+            try {
+                com.example.network.GatewayApiClient.testClientOverride = mockHttpClient
+                kotlinx.coroutines.runBlocking {
+                    dao.clearAllLogs()
+                    dao.clearAllInvoices()
+                    dao.clearAllRetryEvents()
+                    val now = System.currentTimeMillis()
+
+                    val rec503Id = dao.insertIgnoreDuplicate(
+                        com.example.data.SmsRecord(
+                            fingerprint = "fp_rec_503",
+                            bank = "98200033",
+                            bankTitle = "بانک ملت",
+                            body = "بانک ملت واریز 1,000,000 ریال",
+                            normalized = "بانک ملت واریز 1,000,000 ریال",
+                            amountMinor = 1_000_000L,
+                            reason = "",
+                            status = com.example.data.SmsStatus.RETRY.name,
+                            attempts = 8, // exhausted during long outage
+                            httpCode = 503,
+                            lastError = "Service Unavailable",
+                            receivedMs = now - 30_000L,
+                            nextRetryAtMs = now + 240_000L // far in the future
+                        )
+                    )
+                    val rec401Id = dao.insertIgnoreDuplicate(
+                        com.example.data.SmsRecord(
+                            fingerprint = "fp_rec_401",
+                            bank = "98200070",
+                            bankTitle = "بانک تجارت",
+                            body = "بانک تجارت واریز 2,000,000 ریال",
+                            normalized = "بانک تجارت واریز 2,000,000 ریال",
+                            amountMinor = 2_000_000L,
+                            reason = "",
+                            status = com.example.data.SmsStatus.FAILED.name,
+                            attempts = 1,
+                            httpCode = 401,
+                            lastError = "Unauthorized token",
+                            receivedMs = now - 25_000L,
+                            nextRetryAtMs = null
+                        )
+                    )
+
+                    // Step A: Network recovery (includeAuth401 = false) recovers 503 RETRY item immediately even though attempts==8 & nextRetryAtMs was +240s,
+                    // while keeping 401 token failure untouched.
+                    val outcomeNet = ForwardWorker.runRecoverySyncNow(
+                        context = app,
+                        includeAuth401 = false,
+                        reasonFa = "بازگشت اتصال اینترنت"
+                    )
+                    assertEquals(ForwardWorker.WorkOutcome.SUCCESS, outcomeNet)
+                    assertEquals(com.example.data.SmsStatus.MATCHED.name, dao.getById(rec503Id)?.status)
+                    assertEquals(com.example.data.SmsStatus.FAILED.name, dao.getById(rec401Id)?.status)
+                    assertEquals(1, com.example.network.ServerHealthTracker.postErrorSyncFlow.value.lastRecoveryRecoveredCount)
+                    assertEquals(1, com.example.network.ServerHealthTracker.postErrorSyncFlow.value.lastRecoveryRemainingErrors)
+
+                    // Step B: Credential / token recovery (includeAuth401 = true) also recovers the 401 FAILED record.
+                    val outcomeAuth = ForwardWorker.runRecoverySyncNow(
+                        context = app,
+                        includeAuth401 = true,
+                        reasonFa = "اصلاح توکن"
+                    )
+                    assertEquals(ForwardWorker.WorkOutcome.SUCCESS, outcomeAuth)
+                    assertEquals(com.example.data.SmsStatus.MATCHED.name, dao.getById(rec401Id)?.status)
+                    assertEquals(0, com.example.network.ServerHealthTracker.postErrorSyncFlow.value.lastRecoveryRemainingErrors)
+                    assertEquals(1, repo.readSettings().lastErrorRecoverySyncedCount)
+                }
+            } finally {
+                com.example.network.GatewayApiClient.testClientOverride = null
+            }
+        } finally {
+            store.clear()
+        }
+    }
+
+    @Test
+    fun `verify 15-day automatic log cleanup preserves recent logs and approved invoices`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val repo = SettingsRepo.getInstance(app)
+        val db = AppDatabase.getInstance(app)
+        val dao = db.logDao()
+        val store = androidx.lifecycle.ViewModelStore()
+        try {
+            val vm = androidx.lifecycle.ViewModelProvider(
+                store,
+                AsisViewModel.provideFactory(app)
+            )[AsisViewModel::class.java]
+
+            kotlinx.coroutines.runBlocking {
+                dao.clearAllLogs()
+                dao.clearAllInvoices()
+                dao.clearAllRetryEvents()
+
+                val nowMs = System.currentTimeMillis()
+                val dayMs = 86_400_000L
+
+                val oldSmsId = dao.insertIgnoreDuplicate(
+                    com.example.data.SmsRecord(
+                        fingerprint = "fp_old_20d",
+                        bank = "98200033",
+                        bankTitle = "بانک ملت",
+                        body = "واریز قدیمی ۲۰ روز پیش",
+                        normalized = "واریز قدیمی ۲۰ روز پیش",
+                        amountMinor = 12_000_000L,
+                        reason = "",
+                        status = com.example.data.SmsStatus.MATCHED.name,
+                        receivedMs = nowMs - 20L * dayMs,
+                        storedMs = nowMs - 20L * dayMs
+                    )
+                )
+                val recentSmsId = dao.insertIgnoreDuplicate(
+                    com.example.data.SmsRecord(
+                        fingerprint = "fp_recent_5d",
+                        bank = "98200070",
+                        bankTitle = "بانک تجارت",
+                        body = "واریز ۵ روز پیش",
+                        normalized = "واریز ۵ روز پیش",
+                        amountMinor = 25_000_000L,
+                        reason = "",
+                        status = com.example.data.SmsStatus.MATCHED.name,
+                        receivedMs = nowMs - 5L * dayMs,
+                        storedMs = nowMs - 5L * dayMs
+                    )
+                )
+
+                dao.insertRetryAttemptEvents(
+                    listOf(
+                        com.example.data.RetryAttemptEventEntity(
+                            smsRecordId = oldSmsId,
+                            attemptedAtMs = nowMs - 20L * dayMs,
+                            succeeded = false,
+                            httpCode = 503
+                        ),
+                        com.example.data.RetryAttemptEventEntity(
+                            smsRecordId = recentSmsId,
+                            attemptedAtMs = nowMs - 3L * dayMs,
+                            succeeded = true,
+                            httpCode = 200
+                        )
+                    )
+                )
+
+                // Approved invoice older than 15 days must NEVER be deleted by log cleanup
+                dao.recordApprovedInvoice(
+                    publicId = "ORD-KEEP-20D",
+                    kind = "order",
+                    dueMinor = 15_000_000L,
+                    smsId = oldSmsId,
+                    bankTitle = "بانک ملت",
+                    matchedAtMs = nowMs - 20L * dayMs
+                )
+
+                assertEquals(1, dao.countLogsOlderThan(nowMs - 15L * dayMs))
+
+                // Enable 15-day auto cleanup in SettingsRepo and run cleanup deterministically
+                repo.setAutoClearOldLogsEnabled(true)
+                assertTrue(repo.readSettings().autoClearOldLogsEnabled)
+
+                val deletedCount = ForwardWorker.runOldLogsCleanupNow(app, forceRun15Day = false)
+                assertEquals(1, deletedCount)
+                org.junit.Assert.assertNull(dao.getById(oldSmsId))
+                assertNotNull(dao.getById(recentSmsId))
+                assertEquals(0, dao.countLogsOlderThan(nowMs - 15L * dayMs))
+                assertEquals(1, dao.getRecentRetryEvents(0L).size)
+                assertEquals(1, repo.readSettings().lastAutoLogClearedCount)
+                assertNotNull(repo.readSettings().lastAutoLogCleanupAtMs)
+
+                // Verify ViewModel toggle schedules/cancels WorkManager cleanly
+                vm.setAutoClearOldLogsEnabled(true)
+                assertTrue(vm.settingsState.value.autoClearOldLogsEnabled)
+
+                // Verify approved invoice survived 15-day cleanup intact with its price
+                val preservedInvoice = dao.getInvoiceByPublicId("ORD-KEEP-20D")
+                assertNotNull(preservedInvoice)
+                assertEquals("MATCHED", preservedInvoice?.status)
+                assertEquals(15_000_000L, preservedInvoice?.dueMinor)
+
+                // When autoClearOldLogsEnabled is false, 20-day log falls under 30-day default and isn't deleted automatically
+                vm.setAutoClearOldLogsEnabled(false)
+                val secondOldId = dao.insertIgnoreDuplicate(
+                    com.example.data.SmsRecord(
+                        fingerprint = "fp_old_20d_disabled",
+                        bank = "98200033",
+                        bankTitle = "بانک ملت",
+                        body = "واریز ۲۰ روز پیش هنگام خاموش بودن حذف ۱۵ روزه",
+                        normalized = "واریز ۲۰ روز پیش هنگام خاموش بودن حذف ۱۵ روزه",
+                        amountMinor = 9_000_000L,
+                        reason = "",
+                        status = com.example.data.SmsStatus.IGNORED.name,
+                        receivedMs = nowMs - 20L * dayMs,
+                        storedMs = nowMs - 20L * dayMs
+                    )
+                )
+                val deletedWhenDisabled = ForwardWorker.runOldLogsCleanupNow(app, forceRun15Day = false)
+                assertEquals(0, deletedWhenDisabled)
+                assertNotNull(dao.getById(secondOldId))
+
+                // Manual forceRun15Day still cleans >15d logs on user click
+                val forcedDeleted = ForwardWorker.runOldLogsCleanupNow(app, forceRun15Day = true)
+                assertEquals(1, forcedDeleted)
+                org.junit.Assert.assertNull(dao.getById(secondOldId))
+            }
+        } finally {
+            store.clear()
+        }
+    }
+
+    @Test
+    fun `verify approved invoice persistence, non-overwrite guard, price reporting, and notification`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val context = app.applicationContext
+        val repo = SettingsRepo.getInstance(context)
+        val db = AppDatabase.getInstance(context)
+        val dao = db.logDao()
+
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(
+            android.Manifest.permission.POST_NOTIFICATIONS
+        )
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        val shadowNm = org.robolectric.Shadows.shadowOf(nm)
+        nm.cancelAll()
+
+        repo.setNotifyOnApprovedInvoice(true)
+        repo.saveEndpointAndToken(
+            "https://invoice-test.example.com/panel",
+            "valid_invoice_gateway_token_123456"
+        )
+        repo.setServiceEnabled(true)
+        repo.setAutoApproveInApp(true)
+
+        val nowMs = System.currentTimeMillis()
+        kotlinx.coroutines.runBlocking {
+            dao.clearAllLogs()
+            dao.clearAllInvoices()
+            dao.clearAllRetryEvents()
+
+            // 1. Direct recordApprovedInvoice persistence & upsertServerWaitingInvoices guard
+            dao.recordApprovedInvoice(
+                publicId = "ORD-901",
+                kind = "order",
+                dueMinor = 35_000_000L,
+                smsId = 10L,
+                bankTitle = "بانک ملت",
+                matchedAtMs = nowMs - 2_000L
+            )
+            val inv901 = dao.getInvoiceByPublicId("ORD-901")
+            assertNotNull(inv901)
+            assertEquals("MATCHED", inv901?.status)
+            assertEquals(35_000_000L, inv901?.dueMinor)
+            assertEquals("بانک ملت", inv901?.bankTitle)
+
+            // Server re-sending WAITING for same publicId must NOT overwrite MATCHED record
+            dao.upsertServerWaitingInvoices(
+                listOf(
+                    com.example.data.PendingInvoiceEntity(
+                        publicId = "ORD-901",
+                        kind = "order",
+                        dueMinor = 35_000_000L,
+                        createdMs = nowMs - 2_000L,
+                        status = "WAITING"
+                    )
+                )
+            )
+            assertEquals("MATCHED", dao.getInvoiceByPublicId("ORD-901")?.status)
+
+            // 2. End-to-end ForwardWorker sweep approves ORD-902 (42,000,000 Rial = 4,200,000 Toman),
+            // persists MATCHED invoice + price, and fires price notification.
+            val mockHttpClient = okhttp3.OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val req = chain.request()
+                    val url = req.url.toString()
+                    val now = System.currentTimeMillis()
+                    val jsonBody = when {
+                        url.endsWith("/sms-pending") -> """
+                            {
+                              "server_now_ms": $now,
+                              "match_window_hours": 24,
+                              "auto_max_toman": 0,
+                              "items": [
+                                {"kind": "order", "public_id": "ORD-902", "due_minor": 42000000, "created_ms": ${now - 10000}, "early": false}
+                              ]
+                            }
+                        """.trimIndent()
+                        url.endsWith("/sms-approve") -> """{"ok":true,"status":"approved"}"""
+                        else -> """{"ok":true}"""
+                    }
+                    okhttp3.Response.Builder()
+                        .request(req)
+                        .protocol(okhttp3.Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(okhttp3.ResponseBody.Companion.run { jsonBody.toResponseBody(null) })
+                        .build()
+                }
+                .build()
+
+            try {
+                com.example.network.GatewayApiClient.testClientOverride = mockHttpClient
+                val recId = dao.insertIgnoreDuplicate(
+                    com.example.data.SmsRecord(
+                        fingerprint = "fp_approve_902",
+                        bank = "98200021",
+                        bankTitle = "بانک سامان",
+                        body = "بانک سامان\nواریز مبلغ: 42,000,000 ریال",
+                        normalized = "بانک سامان واریز مبلغ: 42,000,000 ریال",
+                        amountMinor = 42_000_000L,
+                        reason = "",
+                        status = com.example.data.SmsStatus.NEW.name,
+                        receivedMs = nowMs
+                    )
+                )
+
+                val outcome = ForwardWorker.runSweepNow(context)
+                assertEquals(ForwardWorker.WorkOutcome.SUCCESS, outcome)
+
+                val matchedSms = dao.getById(recId)
+                assertEquals(com.example.data.SmsStatus.MATCHED.name, matchedSms?.status)
+                assertEquals("ORD-902", matchedSms?.matchedId)
+
+                val inv902 = dao.getInvoiceByPublicId("ORD-902")
+                assertNotNull(inv902)
+                assertEquals("MATCHED", inv902?.status)
+                assertEquals(42_000_000L, inv902?.dueMinor)
+                assertEquals("بانک سامان", inv902?.bankTitle)
+                assertNotNull(inv902?.matchedAtMs)
+
+                // Verify notification includes invoice ID & Toman price (4,200,000 تومان)
+                val notifTexts = shadowNm.allNotifications.map { n ->
+                    val title = n.extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString().orEmpty()
+                    val text = n.extras.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString().orEmpty()
+                    "$title | $text"
+                }
+                assertTrue(
+                    "Expected notification reporting ORD-902 and its Toman price, got: $notifTexts",
+                    notifTexts.any { it.contains("ORD-902") && it.contains("4,200,000") }
+                )
+
+                // Disabling notifyOnApprovedInvoice suppresses approved invoice notification
+                repo.setNotifyOnApprovedInvoice(false)
+                org.junit.Assert.assertFalse(
+                    com.example.util.NotificationHelper.notifyInvoiceApproved(
+                        context = context,
+                        publicId = "ORD-903",
+                        kind = "order",
+                        amountMinor = 10_000_000L,
+                        bankTitle = "بانک ملت",
+                        recordId = 903L
+                    )
+                )
+            } finally {
+                com.example.network.GatewayApiClient.testClientOverride = null
+            }
+        }
     }
 }
