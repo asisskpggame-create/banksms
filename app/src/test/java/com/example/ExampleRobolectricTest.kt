@@ -1254,4 +1254,128 @@ class ExampleRobolectricTest {
             }
         }
     }
+
+    @Test
+    fun `verify granular haptic feedback settings, waveform generation, cooldown throttle, and Vibrator dispatch`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val context = app.applicationContext
+        val repo = SettingsRepo.getInstance(context)
+        com.example.util.HapticFeedbackHelper.resetCooldownsForTests()
+
+        // 1. Verify VIBRATE permission declared in manifest
+        val pkgInfo = app.packageManager.getPackageInfo(
+            app.packageName,
+            android.content.pm.PackageManager.GET_PERMISSIONS
+        )
+        val perms = pkgInfo.requestedPermissions?.toList().orEmpty()
+        assertTrue(
+            "VIBRATE permission must be declared in AndroidManifest.xml",
+            perms.contains(android.Manifest.permission.VIBRATE)
+        )
+
+        // Ensure Robolectric Vibrator reports hardware availability
+        @Suppress("DEPRECATION")
+        val vibrator = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as android.os.VibratorManager).defaultVibrator
+        } else {
+            context.getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
+        }
+        val shadowVibrator = org.robolectric.Shadows.shadowOf(vibrator)
+        shadowVibrator.setHasVibrator(true)
+        shadowVibrator.setHasAmplitudeControl(true)
+
+        // 2. Verify waveform generation scales cleanly per pattern and intensity
+        val lightCrisp = com.example.data.HapticWaveformSpec.forHandshake(
+            com.example.data.HandshakeHapticPattern.CRISP_CLICK,
+            com.example.data.HapticIntensity.LIGHT
+        )
+        val strongRising = com.example.data.HapticWaveformSpec.forHandshake(
+            com.example.data.HandshakeHapticPattern.RISING_CONFIRM,
+            com.example.data.HapticIntensity.STRONG
+        )
+        assertEquals(2, lightCrisp.timingsMs.size)
+        assertEquals(6, strongRising.timingsMs.size)
+        assertTrue(strongRising.amplitudes.last() > lightCrisp.amplitudes.last())
+
+        val tripleAlert = com.example.data.HapticWaveformSpec.forFailedSync(
+            com.example.data.FailedSyncHapticPattern.TRIPLE_ALERT,
+            com.example.data.HapticIntensity.MEDIUM
+        )
+        val longBuzz = com.example.data.HapticWaveformSpec.forFailedSync(
+            com.example.data.FailedSyncHapticPattern.LONG_BUZZ,
+            com.example.data.HapticIntensity.STRONG
+        )
+        assertEquals(6, tripleAlert.timingsMs.size)
+        assertEquals(longArrayOf(0L, 125L).toList(), longBuzz.timingsMs.toList())
+        assertEquals(255, longBuzz.amplitudes[1])
+
+        // 3. Verify ViewModel & SettingsRepo granular persistence and Vibrator execution
+        val store = androidx.lifecycle.ViewModelStore()
+        try {
+            val vm = androidx.lifecycle.ViewModelProvider(
+                store,
+                AsisViewModel.provideFactory(app)
+            )[AsisViewModel::class.java]
+
+            vm.setHapticMasterEnabled(true)
+            vm.setHapticOnServerHandshake(true)
+            vm.setHapticHandshakePattern(com.example.data.HandshakeHapticPattern.RISING_CONFIRM)
+            vm.setHapticHandshakeIntensity(com.example.data.HapticIntensity.LIGHT)
+
+            vm.setHapticOnFailedSync(true)
+            vm.setHapticFailedSyncPattern(com.example.data.FailedSyncHapticPattern.DOUBLE_THUD)
+            vm.setHapticFailedSyncIntensity(com.example.data.HapticIntensity.STRONG)
+            vm.setHapticCooldownEnabled(true)
+
+            val saved = repo.readSettings()
+            assertTrue(saved.hapticMasterEnabled)
+            assertTrue(saved.hapticOnServerHandshake)
+            assertEquals(com.example.data.HandshakeHapticPattern.RISING_CONFIRM, saved.hapticHandshakePattern)
+            assertEquals(com.example.data.HapticIntensity.LIGHT, saved.hapticHandshakeIntensity)
+            assertTrue(saved.hapticOnFailedSync)
+            assertEquals(com.example.data.FailedSyncHapticPattern.DOUBLE_THUD, saved.hapticFailedSyncPattern)
+            assertEquals(com.example.data.HapticIntensity.STRONG, saved.hapticFailedSyncIntensity)
+            assertTrue(saved.hapticCooldownEnabled)
+
+            // Cooldown behavior: first background trigger fires, immediate second is throttled,
+            // forceBypassCooldown = true still fires immediately.
+            com.example.util.HapticFeedbackHelper.resetCooldownsForTests()
+            assertTrue(com.example.util.HapticFeedbackHelper.triggerServerHandshake(context))
+            assertTrue(shadowVibrator.isVibrating)
+            org.junit.Assert.assertFalse(com.example.util.HapticFeedbackHelper.triggerServerHandshake(context))
+            assertTrue(
+                com.example.util.HapticFeedbackHelper.triggerServerHandshake(
+                    context = context,
+                    forceBypassCooldown = true
+                )
+            )
+
+            // Disabling cooldown allows consecutive background failed-sync triggers
+            vm.setHapticCooldownEnabled(false)
+            assertTrue(com.example.util.HapticFeedbackHelper.triggerFailedSync(context))
+            assertTrue(com.example.util.HapticFeedbackHelper.triggerFailedSync(context))
+
+            // Granular toggle: disabling only handshake suppresses handshake while keeping failed sync active
+            vm.setHapticOnServerHandshake(false)
+            org.junit.Assert.assertFalse(
+                com.example.util.HapticFeedbackHelper.triggerServerHandshake(context, forceBypassCooldown = true)
+            )
+            assertTrue(
+                com.example.util.HapticFeedbackHelper.triggerFailedSync(context, forceBypassCooldown = true)
+            )
+
+            // Master switch off suppresses both handshake and failed sync vibrations
+            vm.setHapticMasterEnabled(false)
+            org.junit.Assert.assertFalse(
+                com.example.util.HapticFeedbackHelper.triggerFailedSync(context, forceBypassCooldown = true)
+            )
+
+            // Restore defaults cleanly
+            vm.setHapticMasterEnabled(true)
+            vm.setHapticOnServerHandshake(true)
+            vm.setHapticCooldownEnabled(true)
+        } finally {
+            store.clear()
+        }
+    }
 }

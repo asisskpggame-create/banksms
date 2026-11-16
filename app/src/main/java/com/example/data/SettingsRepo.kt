@@ -66,7 +66,15 @@ data class GatewaySettings(
     val lastErrorRecoverySyncedCount: Int = 0,
     val autoClearOldLogsEnabled: Boolean = false,
     val lastAutoLogCleanupAtMs: Long? = null,
-    val lastAutoLogClearedCount: Int = 0
+    val lastAutoLogClearedCount: Int = 0,
+    val hapticMasterEnabled: Boolean = true,
+    val hapticOnServerHandshake: Boolean = true,
+    val hapticHandshakePattern: HandshakeHapticPattern = HandshakeHapticPattern.DOUBLE_PULSE,
+    val hapticHandshakeIntensity: HapticIntensity = HapticIntensity.MEDIUM,
+    val hapticOnFailedSync: Boolean = true,
+    val hapticFailedSyncPattern: FailedSyncHapticPattern = FailedSyncHapticPattern.TRIPLE_ALERT,
+    val hapticFailedSyncIntensity: HapticIntensity = HapticIntensity.STRONG,
+    val hapticCooldownEnabled: Boolean = true
 ) {
     val isMidnightOled: Boolean
         get() = themeMode == AppThemeMode.MIDNIGHT_OLED
@@ -245,7 +253,23 @@ class SettingsRepo private constructor(context: Context) {
                 lastErrorRecoverySyncedCount = prefs.getInt(KEY_LAST_RECOVERY_SYNC_COUNT, 0),
                 autoClearOldLogsEnabled = prefs.getBoolean(KEY_AUTO_CLEAR_OLD_LOGS, false),
                 lastAutoLogCleanupAtMs = prefs.getLong(KEY_LAST_LOG_CLEANUP_AT_MS, -1L).takeIf { it > 0L },
-                lastAutoLogClearedCount = prefs.getInt(KEY_LAST_LOG_CLEANUP_COUNT, 0)
+                lastAutoLogClearedCount = prefs.getInt(KEY_LAST_LOG_CLEANUP_COUNT, 0),
+                hapticMasterEnabled = prefs.getBoolean(KEY_HAPTIC_MASTER_ENABLED, true),
+                hapticOnServerHandshake = prefs.getBoolean(KEY_HAPTIC_HANDSHAKE_ENABLED, true),
+                hapticHandshakePattern = HandshakeHapticPattern.fromStorageKey(
+                    prefs.getString(KEY_HAPTIC_HANDSHAKE_PATTERN, null)
+                ),
+                hapticHandshakeIntensity = HapticIntensity.fromStorageKey(
+                    prefs.getString(KEY_HAPTIC_HANDSHAKE_INTENSITY, null)
+                ),
+                hapticOnFailedSync = prefs.getBoolean(KEY_HAPTIC_FAILED_SYNC_ENABLED, true),
+                hapticFailedSyncPattern = FailedSyncHapticPattern.fromStorageKey(
+                    prefs.getString(KEY_HAPTIC_FAILED_SYNC_PATTERN, null)
+                ),
+                hapticFailedSyncIntensity = HapticIntensity.fromStorageKey(
+                    prefs.getString(KEY_HAPTIC_FAILED_SYNC_INTENSITY, null)
+                ),
+                hapticCooldownEnabled = prefs.getBoolean(KEY_HAPTIC_COOLDOWN_ENABLED, true)
             )
         } catch (_: Throwable) {
             GatewaySettings(selectedBankCodes = defaultBanks)
@@ -504,6 +528,46 @@ class SettingsRepo private constructor(context: Context) {
         _settingsFlow.value = readSettings()
     }
 
+    fun setHapticMasterEnabled(enabled: Boolean) {
+        safeEdit { putBoolean(KEY_HAPTIC_MASTER_ENABLED, enabled) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun setHapticOnServerHandshake(enabled: Boolean) {
+        safeEdit { putBoolean(KEY_HAPTIC_HANDSHAKE_ENABLED, enabled) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun setHapticHandshakePattern(pattern: HandshakeHapticPattern) {
+        safeEdit { putString(KEY_HAPTIC_HANDSHAKE_PATTERN, pattern.storageKey) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun setHapticHandshakeIntensity(intensity: HapticIntensity) {
+        safeEdit { putString(KEY_HAPTIC_HANDSHAKE_INTENSITY, intensity.storageKey) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun setHapticOnFailedSync(enabled: Boolean) {
+        safeEdit { putBoolean(KEY_HAPTIC_FAILED_SYNC_ENABLED, enabled) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun setHapticFailedSyncPattern(pattern: FailedSyncHapticPattern) {
+        safeEdit { putString(KEY_HAPTIC_FAILED_SYNC_PATTERN, pattern.storageKey) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun setHapticFailedSyncIntensity(intensity: HapticIntensity) {
+        safeEdit { putString(KEY_HAPTIC_FAILED_SYNC_INTENSITY, intensity.storageKey) }
+        _settingsFlow.value = readSettings()
+    }
+
+    fun setHapticCooldownEnabled(enabled: Boolean) {
+        safeEdit { putBoolean(KEY_HAPTIC_COOLDOWN_ENABLED, enabled) }
+        _settingsFlow.value = readSettings()
+    }
+
     fun shouldProcessBank(senderOrBankCode: String, body: String): Boolean {
         val current = readSettings()
         if (!current.filterBanksEnabled) return true
@@ -540,6 +604,14 @@ class SettingsRepo private constructor(context: Context) {
         private const val KEY_AUTO_CLEAR_OLD_LOGS = "auto_clear_old_logs_enabled"
         private const val KEY_LAST_LOG_CLEANUP_AT_MS = "last_log_cleanup_at_ms"
         private const val KEY_LAST_LOG_CLEANUP_COUNT = "last_log_cleanup_count"
+        private const val KEY_HAPTIC_MASTER_ENABLED = "haptic_master_enabled"
+        private const val KEY_HAPTIC_HANDSHAKE_ENABLED = "haptic_handshake_enabled"
+        private const val KEY_HAPTIC_HANDSHAKE_PATTERN = "haptic_handshake_pattern"
+        private const val KEY_HAPTIC_HANDSHAKE_INTENSITY = "haptic_handshake_intensity"
+        private const val KEY_HAPTIC_FAILED_SYNC_ENABLED = "haptic_failed_sync_enabled"
+        private const val KEY_HAPTIC_FAILED_SYNC_PATTERN = "haptic_failed_sync_pattern"
+        private const val KEY_HAPTIC_FAILED_SYNC_INTENSITY = "haptic_failed_sync_intensity"
+        private const val KEY_HAPTIC_COOLDOWN_ENABLED = "haptic_cooldown_enabled"
 
         @Volatile
         private var INSTANCE: SettingsRepo? = null

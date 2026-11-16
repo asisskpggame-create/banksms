@@ -80,15 +80,19 @@ import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.AppThemeMode
+import com.example.data.FailedSyncHapticPattern
 import com.example.data.FilterAction
 import com.example.data.FilterTarget
 import com.example.data.GatewaySettings
+import com.example.data.HandshakeHapticPattern
+import com.example.data.HapticIntensity
 import com.example.data.SmsParser
 import com.example.network.GatewayApiClient
 import com.example.network.PostErrorSyncState
 import com.example.ui.components.AsisElevatedCard
 import com.example.ui.components.AsisMotion
 import com.example.ui.components.CustomFilterRulesCard
+import com.example.ui.components.HapticSettingsCard
 import com.example.ui.components.NotificationSettingsPanelCard
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusPill
@@ -127,6 +131,16 @@ fun SettingsScreen(
     oldLogs15DaysCount: Int = 0,
     onToggleAutoClearOldLogs: (Boolean) -> Unit = {},
     onClearOldLogsNow: () -> Unit = {},
+    onToggleHapticMaster: (Boolean) -> Unit = {},
+    onToggleHapticHandshake: (Boolean) -> Unit = {},
+    onSelectHapticHandshakePattern: (HandshakeHapticPattern) -> Unit = {},
+    onSelectHapticHandshakeIntensity: (HapticIntensity) -> Unit = {},
+    onTestHandshakeHaptic: () -> Unit = {},
+    onToggleHapticFailedSync: (Boolean) -> Unit = {},
+    onSelectHapticFailedSyncPattern: (FailedSyncHapticPattern) -> Unit = {},
+    onSelectHapticFailedSyncIntensity: (HapticIntensity) -> Unit = {},
+    onTestFailedSyncHaptic: () -> Unit = {},
+    onToggleHapticCooldown: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var endpointInput by rememberSaveable { mutableStateOf(settings.endpointUrl) }
@@ -284,6 +298,21 @@ fun SettingsScreen(
             onToggleNotifyApprovedInvoice = onToggleNotifyApprovedInvoice,
             onUpdateSensitiveSmsMinToman = onUpdateSensitiveSmsMinToman,
             onSendTestNotification = onSendTestNotification
+        )
+
+        // Granular Haptic Feedback Customization Menu
+        HapticSettingsCard(
+            settings = settings,
+            onToggleMaster = onToggleHapticMaster,
+            onToggleHandshake = onToggleHapticHandshake,
+            onSelectHandshakePattern = onSelectHapticHandshakePattern,
+            onSelectHandshakeIntensity = onSelectHapticHandshakeIntensity,
+            onTestHandshake = onTestHandshakeHaptic,
+            onToggleFailedSync = onToggleHapticFailedSync,
+            onSelectFailedSyncPattern = onSelectHapticFailedSyncPattern,
+            onSelectFailedSyncIntensity = onSelectHapticFailedSyncIntensity,
+            onTestFailedSync = onTestFailedSyncHaptic,
+            onToggleCooldown = onToggleHapticCooldown
         )
 
         // Local Storage Optimization: Automatic 15-Day Log Cleanup

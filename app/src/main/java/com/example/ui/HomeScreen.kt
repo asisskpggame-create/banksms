@@ -113,6 +113,7 @@ import com.example.ui.components.AsisSpringModal
 import com.example.ui.components.LivePulseDot
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusPill
+import com.example.ui.components.asisFloatAndSway
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -312,6 +313,12 @@ fun HomeScreen(
                 accentColor = MaterialTheme.colorScheme.tertiary,
                 modifier = Modifier
                     .weight(1f)
+                    .asisFloatAndSway(
+                        phaseIndex = 2,
+                        floatAmplitudeDp = 2.6f,
+                        swayAmplitudeDp = 1.0f,
+                        tiltDegrees = 0.35f
+                    )
                     .testTag("stat_queue_card")
                     .clickable(onClick = onNavigateToLogs)
             )
@@ -323,6 +330,12 @@ fun HomeScreen(
                 accentColor = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
                     .weight(1f)
+                    .asisFloatAndSway(
+                        phaseIndex = 3,
+                        floatAmplitudeDp = 2.6f,
+                        swayAmplitudeDp = 1.0f,
+                        tiltDegrees = 0.35f
+                    )
                     .testTag("stat_sent_card")
                     .clickable(onClick = onNavigateToLogs)
             )
@@ -334,6 +347,12 @@ fun HomeScreen(
                 accentColor = MaterialTheme.colorScheme.error,
                 modifier = Modifier
                     .weight(1f)
+                    .asisFloatAndSway(
+                        phaseIndex = 4,
+                        floatAmplitudeDp = 2.6f,
+                        swayAmplitudeDp = 1.0f,
+                        tiltDegrees = 0.35f
+                    )
                     .testTag("stat_failed_card")
                     .clickable(onClick = onNavigateToLogs)
             )
@@ -358,7 +377,16 @@ fun HomeScreen(
         }
 
         // Quick Actions Panel
-        AsisElevatedCard {
+        AsisElevatedCard(
+            modifier = Modifier
+                .asisFloatAndSway(
+                    phaseIndex = 5,
+                    floatAmplitudeDp = 2.2f,
+                    swayAmplitudeDp = 1.1f,
+                    tiltDegrees = 0.25f
+                )
+                .testTag("quick_actions_card")
+        ) {
             SectionHeader(
                 icon = Icons.Default.AutoAwesome,
                 title = "عملیات سریع درگاه",
@@ -423,7 +451,13 @@ fun HomeScreen(
 
         // Registered Approved Invoices & Price Summary Card
         ApprovedInvoicesLedgerCard(
-            invoices = invoices
+            invoices = invoices,
+            modifier = Modifier.asisFloatAndSway(
+                phaseIndex = 7,
+                floatAmplitudeDp = 2.2f,
+                swayAmplitudeDp = 1.1f,
+                tiltDegrees = 0.25f
+            )
         )
 
         // Last Matched Summary Card
@@ -561,6 +595,12 @@ private fun ServerConnectionStatusWidget(
         shadowElevation = 4.dp,
         modifier = Modifier
             .fillMaxWidth()
+            .asisFloatAndSway(
+                phaseIndex = 0,
+                floatAmplitudeDp = 2.5f,
+                swayAmplitudeDp = 1.3f,
+                tiltDegrees = 0.30f
+            )
             .animateContentSize(animationSpec = AsisMotion.smoothSpring())
             .clip(RoundedCornerShape(20.dp))
             .clickable {
@@ -863,6 +903,12 @@ private fun ServiceHeroCard(
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .asisFloatAndSway(
+                phaseIndex = 1,
+                floatAmplitudeDp = 3.2f,
+                swayAmplitudeDp = 1.6f,
+                tiltDegrees = 0.42f
+            )
             .animateContentSize(animationSpec = AsisMotion.smoothSpring())
             .clip(RoundedCornerShape(24.dp))
             .background(Brush.linearGradient(gradientColors))
@@ -871,6 +917,7 @@ private fun ServiceHeroCard(
                 color = glowColor.copy(alpha = if (isFullyActive) 0.45f else 0.25f),
                 shape = RoundedCornerShape(24.dp)
             )
+            .testTag("service_hero_card")
     ) {
         // Subtle ambient radial glow & geometric circles in background
         Canvas(modifier = Modifier.matchParentSize()) {
@@ -1278,7 +1325,16 @@ private fun LastMatchedSummaryCard(
     lastMatchedLog: SmsRecord?,
     onViewAllLogs: () -> Unit
 ) {
-    AsisElevatedCard(modifier = Modifier.testTag("last_sent_card")) {
+    AsisElevatedCard(
+        modifier = Modifier
+            .asisFloatAndSway(
+                phaseIndex = 8,
+                floatAmplitudeDp = 2.3f,
+                swayAmplitudeDp = 1.1f,
+                tiltDegrees = 0.26f
+            )
+            .testTag("last_sent_card")
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1646,7 +1702,14 @@ private fun SmartAmountMatchingModuleCard(
     val matchedInvoices = remember(invoices) { invoices.filter { it.status == "MATCHED" } }
 
     AsisElevatedCard(
-        modifier = Modifier.testTag("smart_amount_matcher_card"),
+        modifier = Modifier
+            .asisFloatAndSway(
+                phaseIndex = 6,
+                floatAmplitudeDp = 2.4f,
+                swayAmplitudeDp = 1.2f,
+                tiltDegrees = 0.28f
+            )
+            .testTag("smart_amount_matcher_card"),
         borderColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f)
     ) {
         SectionHeader(

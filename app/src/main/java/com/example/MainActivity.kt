@@ -678,7 +678,17 @@ fun AsisAppScreen(
                                 totalLogsCount = totalLogsCount,
                                 oldLogs15DaysCount = oldLogs15DaysCount,
                                 onToggleAutoClearOldLogs = asisViewModel::setAutoClearOldLogsEnabled,
-                                onClearOldLogsNow = asisViewModel::clearLogsOlderThan15DaysNow
+                                onClearOldLogsNow = asisViewModel::clearLogsOlderThan15DaysNow,
+                                onToggleHapticMaster = asisViewModel::setHapticMasterEnabled,
+                                onToggleHapticHandshake = asisViewModel::setHapticOnServerHandshake,
+                                onSelectHapticHandshakePattern = asisViewModel::setHapticHandshakePattern,
+                                onSelectHapticHandshakeIntensity = asisViewModel::setHapticHandshakeIntensity,
+                                onTestHandshakeHaptic = asisViewModel::testHandshakeHaptic,
+                                onToggleHapticFailedSync = asisViewModel::setHapticOnFailedSync,
+                                onSelectHapticFailedSyncPattern = asisViewModel::setHapticFailedSyncPattern,
+                                onSelectHapticFailedSyncIntensity = asisViewModel::setHapticFailedSyncIntensity,
+                                onTestFailedSyncHaptic = asisViewModel::testFailedSyncHaptic,
+                                onToggleHapticCooldown = asisViewModel::setHapticCooldownEnabled
                             )
                         }
                     }

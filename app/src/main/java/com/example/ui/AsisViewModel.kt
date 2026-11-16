@@ -7,9 +7,12 @@ import com.example.ForwardWorker
 import com.example.InternetWatchService
 import com.example.data.AppDatabase
 import com.example.data.AppThemeMode
+import com.example.data.FailedSyncHapticPattern
 import com.example.data.FilterAction
 import com.example.data.FilterTarget
 import com.example.data.GatewaySettings
+import com.example.data.HandshakeHapticPattern
+import com.example.data.HapticIntensity
 import com.example.data.Item
 import com.example.data.SettingsRepo
 import com.example.data.SmsFilterEngine
@@ -29,6 +32,7 @@ import com.example.network.ServerConnectionLevel
 import com.example.network.ServerConnectionStatusUi
 import com.example.network.ServerConnectionTelemetry
 import com.example.network.ServerHealthTracker
+import com.example.util.HapticFeedbackHelper
 import com.example.util.NotificationHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -228,6 +232,7 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                 if (uiStatus.level == ServerConnectionLevel.GREEN) {
                     if (hadConnectionError || previousLevel == ServerConnectionLevel.RED) {
                         NotificationHelper.cancelServerErrorNotification(appContext)
+                        HapticFeedbackHelper.triggerServerHandshake(appContext)
                     }
                     hadConnectionError = false
                 } else if (settings.isConfigured && settings.serviceEnabled) {
@@ -235,6 +240,7 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                     val wentOffline = !online && previousLevel != null && previousLevel != ServerConnectionLevel.RED
                     if (wentOffline || hasPingFailure) {
                         hadConnectionError = true
+                        HapticFeedbackHelper.triggerFailedSync(appContext)
                         NotificationHelper.notifyServerConnectionError(
                             context = appContext,
                             errorTitle = uiStatus.titleFa,
@@ -291,6 +297,7 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         if (!InternetWatchService.checkCurrentlyOnline(appContext) && !isOnlineState.value) {
+            HapticFeedbackHelper.triggerFailedSync(appContext, forceBypassCooldown = showFeedbackSnackbar)
             if (showFeedbackSnackbar) {
                 _snackbarMessage.value = "اتصال اینترنت برقرار نیست؛ پس از وصل شدن خودکار همگام‌سازی می‌شود."
             }
@@ -308,6 +315,7 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         }
         val ok = GatewayApiClient.pingServer(current.endpointUrl, current.gatewayToken)
         if (!ok) {
+            HapticFeedbackHelper.triggerFailedSync(appContext, forceBypassCooldown = showFeedbackSnackbar)
             if (showFeedbackSnackbar) {
                 _snackbarMessage.value = "سرور هنوز در دسترس نیست؛ صف خطاها در حالت انتظار باقی ماند."
             }
@@ -322,6 +330,7 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         if (!current.serviceEnabled) {
+            HapticFeedbackHelper.triggerServerHandshake(appContext, forceBypassCooldown = showFeedbackSnackbar)
             if (showFeedbackSnackbar) {
                 _snackbarMessage.value = "اتصال سرور برقرار است؛ برای ارسال پیامک‌ها سرویس اصلی را روشن کنید."
             }
@@ -488,6 +497,96 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setHapticMasterEnabled(enabled: Boolean) {
+        settingsRepo.setHapticMasterEnabled(enabled)
+        if (enabled) {
+            HapticFeedbackHelper.triggerServerHandshake(appContext, forceBypassCooldown = true)
+        }
+        _snackbarMessage.value = if (enabled) {
+            "بازخورد لمسی (لرزش) فعال شد."
+        } else {
+            "تمامی لرزش‌های بازخورد لمسی غیرفعال شدند."
+        }
+    }
+
+    fun setHapticOnServerHandshake(enabled: Boolean) {
+        settingsRepo.setHapticOnServerHandshake(enabled)
+        if (enabled) {
+            HapticFeedbackHelper.triggerServerHandshake(appContext, forceBypassCooldown = true)
+        }
+    }
+
+    fun setHapticHandshakePattern(pattern: HandshakeHapticPattern) {
+        settingsRepo.setHapticHandshakePattern(pattern)
+        val current = settingsRepo.readSettings()
+        if (current.hapticMasterEnabled) {
+            HapticFeedbackHelper.previewHandshake(appContext, pattern, current.hapticHandshakeIntensity)
+        }
+    }
+
+    fun setHapticHandshakeIntensity(intensity: HapticIntensity) {
+        settingsRepo.setHapticHandshakeIntensity(intensity)
+        val current = settingsRepo.readSettings()
+        if (current.hapticMasterEnabled) {
+            HapticFeedbackHelper.previewHandshake(appContext, current.hapticHandshakePattern, intensity)
+        }
+    }
+
+    fun setHapticOnFailedSync(enabled: Boolean) {
+        settingsRepo.setHapticOnFailedSync(enabled)
+        if (enabled) {
+            HapticFeedbackHelper.triggerFailedSync(appContext, forceBypassCooldown = true)
+        }
+    }
+
+    fun setHapticFailedSyncPattern(pattern: FailedSyncHapticPattern) {
+        settingsRepo.setHapticFailedSyncPattern(pattern)
+        val current = settingsRepo.readSettings()
+        if (current.hapticMasterEnabled) {
+            HapticFeedbackHelper.previewFailedSync(appContext, pattern, current.hapticFailedSyncIntensity)
+        }
+    }
+
+    fun setHapticFailedSyncIntensity(intensity: HapticIntensity) {
+        settingsRepo.setHapticFailedSyncIntensity(intensity)
+        val current = settingsRepo.readSettings()
+        if (current.hapticMasterEnabled) {
+            HapticFeedbackHelper.previewFailedSync(appContext, current.hapticFailedSyncPattern, intensity)
+        }
+    }
+
+    fun setHapticCooldownEnabled(enabled: Boolean) {
+        settingsRepo.setHapticCooldownEnabled(enabled)
+    }
+
+    fun testHandshakeHaptic() {
+        val current = settingsRepo.readSettings()
+        val triggered = HapticFeedbackHelper.previewHandshake(
+            context = appContext,
+            pattern = current.hapticHandshakePattern,
+            intensity = current.hapticHandshakeIntensity
+        )
+        _snackbarMessage.value = if (triggered) {
+            "پیش‌نمایش لرزش هندشیک موفق (${current.hapticHandshakePattern.titleFa}) اجرا شد."
+        } else {
+            "سخت‌افزار لرزش در این دستگاه در دسترس نیست."
+        }
+    }
+
+    fun testFailedSyncHaptic() {
+        val current = settingsRepo.readSettings()
+        val triggered = HapticFeedbackHelper.previewFailedSync(
+            context = appContext,
+            pattern = current.hapticFailedSyncPattern,
+            intensity = current.hapticFailedSyncIntensity
+        )
+        _snackbarMessage.value = if (triggered) {
+            "پیش‌نمایش لرزش خطای همگام‌سازی (${current.hapticFailedSyncPattern.titleFa}) اجرا شد."
+        } else {
+            "سخت‌افزار لرزش در این دستگاه در دسترس نیست."
+        }
+    }
+
     fun setThemeMode(mode: AppThemeMode) {
         settingsRepo.setThemeMode(mode)
         _snackbarMessage.value = when (mode) {
@@ -584,6 +683,7 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
     fun runTestConnection(endpointUrl: String, token: String) {
         val validationError = GatewayApiClient.validateInputConfig(endpointUrl, token)
         if (validationError != null) {
+            HapticFeedbackHelper.triggerFailedSync(appContext, forceBypassCooldown = true)
             _testConnectionState.value = TestConnectionUiState.Error(null, validationError)
             return
         }
@@ -593,6 +693,7 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             when (val result = GatewayApiClient.testConnection(endpointUrl, token)) {
                 is GatewayResult.Success -> {
+                    HapticFeedbackHelper.triggerServerHandshake(appContext, forceBypassCooldown = true)
                     _testConnectionState.value = TestConnectionUiState.SuccessSmsIn(
                         httpCode = result.httpCode,
                         status = result.status
@@ -607,12 +708,14 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 is GatewayResult.PermanentFailure -> {
+                    HapticFeedbackHelper.triggerFailedSync(appContext, forceBypassCooldown = true)
                     _testConnectionState.value = TestConnectionUiState.Error(
                         httpCode = result.httpCode,
                         message = result.message
                     )
                 }
                 is GatewayResult.RetryableFailure -> {
+                    HapticFeedbackHelper.triggerFailedSync(appContext, forceBypassCooldown = true)
                     _testConnectionState.value = TestConnectionUiState.Error(
                         httpCode = result.httpCode,
                         message = result.message
@@ -628,6 +731,7 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
     fun runTestPendingEndpoint(endpointUrl: String, token: String) {
         val validationError = GatewayApiClient.validateInputConfig(endpointUrl, token)
         if (validationError != null) {
+            HapticFeedbackHelper.triggerFailedSync(appContext, forceBypassCooldown = true)
             _testConnectionState.value = TestConnectionUiState.Error(null, validationError)
             return
         }
@@ -637,6 +741,7 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             when (val res = GatewayApiClient.fetchPendingItems(endpointUrl, token)) {
                 is PendingFetchResult.Success -> {
+                    HapticFeedbackHelper.triggerServerHandshake(appContext, forceBypassCooldown = true)
                     settingsRepo.updateServerSyncMeta(
                         clockOffsetMs = res.clockOffsetMs,
                         matchWindowHours = res.matchWindowHours,
@@ -659,15 +764,19 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 is PendingFetchResult.Unauthorized401 -> {
+                    HapticFeedbackHelper.triggerFailedSync(appContext, forceBypassCooldown = true)
                     _testConnectionState.value = TestConnectionUiState.Error(401, res.message)
                 }
                 is PendingFetchResult.NotFound404FallbackToSmsIn -> {
+                    HapticFeedbackHelper.triggerFailedSync(appContext, forceBypassCooldown = true)
                     _testConnectionState.value = TestConnectionUiState.Error(404, res.message)
                 }
                 is PendingFetchResult.PermanentError -> {
+                    HapticFeedbackHelper.triggerFailedSync(appContext, forceBypassCooldown = true)
                     _testConnectionState.value = TestConnectionUiState.Error(res.httpCode, res.message)
                 }
                 is PendingFetchResult.RetryableError -> {
+                    HapticFeedbackHelper.triggerFailedSync(appContext, forceBypassCooldown = true)
                     _testConnectionState.value = TestConnectionUiState.Error(res.httpCode, res.message)
                 }
             }
@@ -814,9 +923,11 @@ class AsisViewModel(application: Application) : AndroidViewModel(application) {
             val updated = logDao.getById(entry.id)
             when {
                 updated?.statusEnum == SmsStatus.MATCHED -> {
+                    HapticFeedbackHelper.triggerServerHandshake(appContext, forceBypassCooldown = true)
                     _snackbarMessage.value = "ارسال مجدد با موفقیت انجام شد و واریز تأیید گردید."
                 }
                 !updated?.lastError.isNullOrBlank() -> {
+                    HapticFeedbackHelper.triggerFailedSync(appContext, forceBypassCooldown = true)
                     _snackbarMessage.value = "خطا در ارسال مجدد: ${updated?.lastError}"
                 }
                 else -> {

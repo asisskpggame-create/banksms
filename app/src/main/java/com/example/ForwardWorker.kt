@@ -27,6 +27,7 @@ import com.example.network.GatewayApiClient
 import com.example.network.GatewayResult
 import com.example.network.PendingFetchResult
 import com.example.network.ServerHealthTracker
+import com.example.util.HapticFeedbackHelper
 import com.example.util.NotificationHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -231,6 +232,7 @@ class ForwardWorker(
             val pendingSuccess = when (pendingResult) {
                 is PendingFetchResult.Success -> {
                     NotificationHelper.cancelServerErrorNotification(appContext)
+                    HapticFeedbackHelper.triggerServerHandshake(appContext)
                     pendingResult
                 }
 
@@ -268,6 +270,7 @@ class ForwardWorker(
                         }
                     }
                     refreshBatchRetrySchedule(appContext, dao)
+                    HapticFeedbackHelper.triggerFailedSync(appContext)
                     return@withLock WorkOutcome.FAILURE
                 }
 
@@ -304,6 +307,7 @@ class ForwardWorker(
                         }
                     }
                     refreshBatchRetrySchedule(appContext, dao)
+                    HapticFeedbackHelper.triggerFailedSync(appContext)
                     return@withLock WorkOutcome.FAILURE
                 }
 
@@ -340,6 +344,7 @@ class ForwardWorker(
                         }
                     }
                     refreshBatchRetrySchedule(appContext, dao)
+                    HapticFeedbackHelper.triggerFailedSync(appContext)
                     return@withLock WorkOutcome.RETRY
                 }
             }
@@ -542,12 +547,16 @@ class ForwardWorker(
                 if (approveOutcome == ApprovalStepOutcome.RETRY) {
                     shouldRetryAny = true
                 } else if (approveOutcome == ApprovalStepOutcome.ABORT_401) {
+                    HapticFeedbackHelper.triggerFailedSync(appContext)
                     return@withLock WorkOutcome.FAILURE
                 }
             }
 
             // deposits that matched nothing yet stay active (NEW / UNKNOWN_DEPOSIT) until `match_window_hours` expires them
             refreshBatchRetrySchedule(appContext, dao)
+            if (shouldRetryAny) {
+                HapticFeedbackHelper.triggerFailedSync(appContext)
+            }
             val stillWaiting = dao.getActiveDepositsForMatching().any {
                 it.statusEnum == SmsStatus.NEW || it.statusEnum == SmsStatus.UNKNOWN_DEPOSIT
             }
@@ -1234,7 +1243,15 @@ class ForwardWorker(
                 nextScheduledWorkAtMs = nextScheduledAt,
                 nowMs = System.currentTimeMillis()
             )
-            if (failedCount > 0) WorkOutcome.RETRY else WorkOutcome.SUCCESS
+            if (failedCount > 0) {
+                HapticFeedbackHelper.triggerFailedSync(appContext)
+                WorkOutcome.RETRY
+            } else {
+                if (succeededCount > 0) {
+                    HapticFeedbackHelper.triggerServerHandshake(appContext)
+                }
+                WorkOutcome.SUCCESS
+            }
         }
 
         private suspend fun executeRecoverySyncLocked(
@@ -1290,7 +1307,13 @@ class ForwardWorker(
                     remainingErrorCount = remaining,
                     nowMs = System.currentTimeMillis()
                 )
-                return@withLock if (pingOk) WorkOutcome.SUCCESS else WorkOutcome.RETRY
+                if (pingOk) {
+                    HapticFeedbackHelper.triggerServerHandshake(appContext)
+                    return@withLock WorkOutcome.SUCCESS
+                } else {
+                    HapticFeedbackHelper.triggerFailedSync(appContext)
+                    return@withLock WorkOutcome.RETRY
+                }
             }
 
             BatchRetryTracker.onBatchStarted()
@@ -1559,7 +1582,15 @@ class ForwardWorker(
                 remainingErrorCount = remainingErrors,
                 nowMs = finishMs
             )
-            if (failedCount > 0) WorkOutcome.RETRY else WorkOutcome.SUCCESS
+            if (failedCount > 0) {
+                HapticFeedbackHelper.triggerFailedSync(appContext)
+                WorkOutcome.RETRY
+            } else {
+                if (succeededCount > 0) {
+                    HapticFeedbackHelper.triggerServerHandshake(appContext)
+                }
+                WorkOutcome.SUCCESS
+            }
         }
 
         private suspend fun refreshBatchRetrySchedule(appContext: Context, dao: LogDao): Long? {

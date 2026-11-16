@@ -7,6 +7,8 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.StartOffset
+import androidx.compose.animation.core.StartOffsetType
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -45,10 +47,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -79,6 +83,90 @@ object AsisMotion {
         dampingRatio = Spring.DampingRatioLowBouncy,
         stiffness = Spring.StiffnessMediumLow
     )
+}
+
+/**
+ * Applies a subtle, organic multi-axis "float and sway" motion using [rememberInfiniteTransition]
+ * on a GPU [graphicsLayer], creating a calm floating-depth sensation without triggering relayouts.
+ */
+fun Modifier.asisFloatAndSway(
+    phaseIndex: Int = 0,
+    floatAmplitudeDp: Float = 2.8f,
+    swayAmplitudeDp: Float = 1.4f,
+    tiltDegrees: Float = 0.35f,
+    baseDurationMs: Int = 4400
+): Modifier = composed {
+    val transition = rememberInfiniteTransition(label = "asisFloatAndSway_$phaseIndex")
+    val safePeriod = baseDurationMs.coerceAtLeast(1800)
+
+    val floatDuration = safePeriod + (phaseIndex % 5) * 320
+    val swayDuration = (safePeriod * 1.31f).toInt() + (phaseIndex % 4) * 390
+    val tiltDuration = (safePeriod * 1.57f).toInt() + (phaseIndex % 3) * 410
+
+    val floatOffsetDp by transition.animateFloat(
+        initialValue = -floatAmplitudeDp,
+        targetValue = floatAmplitudeDp,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = floatDuration, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+            initialStartOffset = StartOffset(phaseIndex * 430, StartOffsetType.FastForward)
+        ),
+        label = "floatY_$phaseIndex"
+    )
+
+    val swayOffsetDp by transition.animateFloat(
+        initialValue = -swayAmplitudeDp,
+        targetValue = swayAmplitudeDp,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = swayDuration, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+            initialStartOffset = StartOffset(phaseIndex * 610 + 270, StartOffsetType.FastForward)
+        ),
+        label = "swayX_$phaseIndex"
+    )
+
+    val swayRollDeg by transition.animateFloat(
+        initialValue = -tiltDegrees,
+        targetValue = tiltDegrees,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = tiltDuration, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+            initialStartOffset = StartOffset(phaseIndex * 510 + 160, StartOffsetType.FastForward)
+        ),
+        label = "tiltZ_$phaseIndex"
+    )
+
+    val pitchDeg by transition.animateFloat(
+        initialValue = -(tiltDegrees * 1.35f),
+        targetValue = tiltDegrees * 1.35f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = floatDuration + 900, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+            initialStartOffset = StartOffset(phaseIndex * 340 + 490, StartOffsetType.FastForward)
+        ),
+        label = "pitchX_$phaseIndex"
+    )
+
+    val depthScale by transition.animateFloat(
+        initialValue = 0.9965f,
+        targetValue = 1.0035f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = floatDuration, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+            initialStartOffset = StartOffset(phaseIndex * 430, StartOffsetType.FastForward)
+        ),
+        label = "depthScale_$phaseIndex"
+    )
+
+    graphicsLayer {
+        translationY = floatOffsetDp * density
+        translationX = swayOffsetDp * density
+        rotationZ = swayRollDeg
+        rotationX = pitchDeg
+        scaleX = depthScale
+        scaleY = depthScale
+        cameraDistance = 14f * density
+    }
 }
 
 @Composable
