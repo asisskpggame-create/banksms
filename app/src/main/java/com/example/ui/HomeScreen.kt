@@ -315,9 +315,9 @@ fun HomeScreen(
                     .weight(1f)
                     .asisFloatAndSway(
                         phaseIndex = 2,
-                        floatAmplitudeDp = 2.6f,
-                        swayAmplitudeDp = 1.0f,
-                        tiltDegrees = 0.35f
+                        floatAmplitudeDp = 1.8f,
+                        swayAmplitudeDp = 0.6f,
+                        tiltDegrees = 0.22f
                     )
                     .testTag("stat_queue_card")
                     .clickable(onClick = onNavigateToLogs)
@@ -332,9 +332,9 @@ fun HomeScreen(
                     .weight(1f)
                     .asisFloatAndSway(
                         phaseIndex = 3,
-                        floatAmplitudeDp = 2.6f,
-                        swayAmplitudeDp = 1.0f,
-                        tiltDegrees = 0.35f
+                        floatAmplitudeDp = 1.8f,
+                        swayAmplitudeDp = 0.6f,
+                        tiltDegrees = 0.22f
                     )
                     .testTag("stat_sent_card")
                     .clickable(onClick = onNavigateToLogs)
@@ -349,9 +349,9 @@ fun HomeScreen(
                     .weight(1f)
                     .asisFloatAndSway(
                         phaseIndex = 4,
-                        floatAmplitudeDp = 2.6f,
-                        swayAmplitudeDp = 1.0f,
-                        tiltDegrees = 0.35f
+                        floatAmplitudeDp = 1.8f,
+                        swayAmplitudeDp = 0.6f,
+                        tiltDegrees = 0.22f
                     )
                     .testTag("stat_failed_card")
                     .clickable(onClick = onNavigateToLogs)
@@ -441,23 +441,23 @@ fun HomeScreen(
             }
         }
 
+        // Registered Approved Invoices & Price Summary Card
+        ApprovedInvoicesLedgerCard(
+            invoices = invoices,
+            modifier = Modifier.asisFloatAndSway(
+                phaseIndex = 6,
+                floatAmplitudeDp = 2.2f,
+                swayAmplitudeDp = 1.1f,
+                tiltDegrees = 0.25f
+            )
+        )
+
         // Smart Amount Matching & 1-Minute Server Invoice Verification Module
         SmartAmountMatchingModuleCard(
             invoices = invoices,
             onOpenAddInvoice = { showAddInvoiceDialog = true },
             onFlushQueue = onFlushQueue,
             onRemoveInvoice = onRemoveInvoice
-        )
-
-        // Registered Approved Invoices & Price Summary Card
-        ApprovedInvoicesLedgerCard(
-            invoices = invoices,
-            modifier = Modifier.asisFloatAndSway(
-                phaseIndex = 7,
-                floatAmplitudeDp = 2.2f,
-                swayAmplitudeDp = 1.1f,
-                tiltDegrees = 0.25f
-            )
         )
 
         // Last Matched Summary Card
@@ -762,23 +762,28 @@ private fun ServerConnectionStatusWidget(
                                 color = Color.White.copy(alpha = 0.55f)
                             )
                         }
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color.White.copy(alpha = 0.08f),
+                        Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
+                                .size(48.dp)
+                                .clip(RoundedCornerShape(10.dp))
                                 .clickable(enabled = !status.isChecking, onClick = onRefreshClick)
-                                .testTag("refresh_server_status_button")
+                                .testTag("refresh_server_status_button"),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = "بررسی لحظه‌ای اتصال سرور",
-                                tint = accentColor,
-                                modifier = Modifier
-                                    .padding(5.dp)
-                                    .size(16.dp)
-                                    .rotate(spinAngle)
-                            )
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color.White.copy(alpha = 0.08f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "بررسی لحظه‌ای اتصال سرور",
+                                    tint = accentColor,
+                                    modifier = Modifier
+                                        .padding(6.dp)
+                                        .size(16.dp)
+                                        .rotate(spinAngle)
+                                )
+                            }
                         }
                     }
                 }
@@ -1704,7 +1709,7 @@ private fun SmartAmountMatchingModuleCard(
     AsisElevatedCard(
         modifier = Modifier
             .asisFloatAndSway(
-                phaseIndex = 6,
+                phaseIndex = 7,
                 floatAmplitudeDp = 2.4f,
                 swayAmplitudeDp = 1.2f,
                 tiltDegrees = 0.28f

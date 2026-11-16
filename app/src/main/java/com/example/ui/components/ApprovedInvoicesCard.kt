@@ -27,10 +27,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Paid
-import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -93,7 +93,7 @@ fun ApprovedInvoicesLedgerCard(
         }
     ) {
         SectionHeader(
-            icon = Icons.Default.ReceiptLong,
+            icon = Icons.AutoMirrored.Filled.ReceiptLong,
             title = "فاکتورهای تأییدشده و قیمت‌ها",
             subtitle = "ثبت خودکار و لحظه‌ای تمام فاکتورهای پرداخت‌شده همراه با مبلغ دقیق",
             tint = greenAccent,

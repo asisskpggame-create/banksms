@@ -39,6 +39,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -81,6 +82,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -90,6 +92,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -366,14 +369,20 @@ fun AsisAppScreen(
                                 com.example.network.ServerConnectionLevel.YELLOW -> if (!settings.isConfigured) "نیازمند تنظیم" else "هشدار"
                                 com.example.network.ServerConnectionLevel.RED -> "آفلاین"
                             }
-                            StatusPill(
-                                label = statusText,
-                                color = statusColor,
-                                isPulsing = serverStatus.level == com.example.network.ServerConnectionLevel.GREEN || serverStatus.isChecking,
+                            Box(
+                                contentAlignment = Alignment.Center,
                                 modifier = Modifier
                                     .padding(end = 12.dp)
+                                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                    .clip(RoundedCornerShape(50))
                                     .clickable { asisViewModel.checkServerConnectionNow() }
-                            )
+                            ) {
+                                StatusPill(
+                                    label = statusText,
+                                    color = statusColor,
+                                    isPulsing = serverStatus.level == com.example.network.ServerConnectionLevel.GREEN || serverStatus.isChecking
+                                )
+                            }
                         },
                         colors = TopAppBarDefaults.topAppBarColors(
                             containerColor = MaterialTheme.colorScheme.background,
@@ -429,14 +438,17 @@ fun AsisAppScreen(
                                         label = {
                                             Text(
                                                 text = stringResource(id = tab.titleRes),
-                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = TextOverflow.Ellipsis
                                             )
                                         }
                                     )
                                 }
 
                                 // Center spacer for the overlapping circular power toggle button
-                                Spacer(modifier = Modifier.weight(0.65f))
+                                Spacer(modifier = Modifier.weight(0.82f))
 
                                 for (tab in secondPair) {
                                     val selected = currentTab == tab
@@ -462,7 +474,10 @@ fun AsisAppScreen(
                                         label = {
                                             Text(
                                                 text = stringResource(id = tab.titleRes),
-                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = TextOverflow.Ellipsis
                                             )
                                         }
                                     )
@@ -490,6 +505,7 @@ fun AsisAppScreen(
                                 .offset(y = (-14).dp)
                                 .size(54.dp)
                                 .scale(powerScale)
+                                .clip(CircleShape)
                                 .clickable {
                                     asisViewModel.setServiceEnabled(!settings.serviceEnabled)
                                 }
@@ -514,9 +530,38 @@ fun AsisAppScreen(
                     .padding(innerPadding)
             ) {
                 if (useNavRail) {
+                    val railPowerColor by animateColorAsState(
+                        targetValue = if (settings.serviceEnabled) Color(0xFFF59E0B) else Color(0xFF475569),
+                        animationSpec = AsisMotion.smoothSpring(),
+                        label = "railPowerColor"
+                    )
                     NavigationRail(
                         containerColor = MaterialTheme.colorScheme.surface,
-                        modifier = Modifier.fillMaxHeight()
+                        modifier = Modifier.fillMaxHeight(),
+                        header = {
+                            Surface(
+                                shape = CircleShape,
+                                color = railPowerColor,
+                                shadowElevation = if (settings.serviceEnabled) 6.dp else 2.dp,
+                                modifier = Modifier
+                                    .padding(top = 12.dp, bottom = 8.dp)
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .clickable {
+                                        asisViewModel.setServiceEnabled(!settings.serviceEnabled)
+                                    }
+                                    .testTag("rail_power_toggle")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Filled.PowerSettingsNew,
+                                        contentDescription = "روشن/خاموش کردن سرویس",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                            }
+                        }
                     ) {
                         Spacer(modifier = Modifier.weight(0.15f))
                         for (tab in AsisTab.entries) {
@@ -534,7 +579,11 @@ fun AsisAppScreen(
                                     )
                                 },
                                 label = {
-                                    Text(text = stringResource(id = tab.titleRes))
+                                    Text(
+                                        text = stringResource(id = tab.titleRes),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                             )
                         }

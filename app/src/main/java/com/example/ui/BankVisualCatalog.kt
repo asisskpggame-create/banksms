@@ -809,7 +809,7 @@ fun RealisticBankCard(
                     color = Color.Black.copy(alpha = 0.28f),
                     border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
                     modifier = Modifier
-                        .size(44.dp)
+                        .size(48.dp)
                         .clip(CircleShape)
                         .clickable(onClick = onDeleteClick)
                         .testTag("delete_bank_button_$displaySender")

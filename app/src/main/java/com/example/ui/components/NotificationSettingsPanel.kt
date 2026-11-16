@@ -28,12 +28,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.automirrored.filled.Rule
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
-import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
@@ -355,7 +355,7 @@ fun NotificationSettingsPanelCard(
 
         // 4. Approved Invoice & Price Push Alerts
         NotificationToggleRow(
-            icon = Icons.Default.ReceiptLong,
+            icon = Icons.AutoMirrored.Filled.ReceiptLong,
             iconTint = Color(0xFF10B981),
             title = "اعلان و اعلام قیمت فاکتورهای تأییدشده",
             subtitle = "نمایش اعلان لحظه‌ای با شناسه فاکتور و مبلغ دقیق (تومان و ریال) بلافاصله پس از تأیید",

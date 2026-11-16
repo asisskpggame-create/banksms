@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -103,10 +104,12 @@ private val MirzaInputBg: Color
 private val MirzaBorder: Color
     @Composable get() = MaterialTheme.colorScheme.outlineVariant
 private val MirzaGreen = Color(0xFF38D373)
-private val MirzaMutedText = Color(0xFF8E98A8)
+private val MirzaMutedText: Color
+    @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
 private val MirzaAddPillBg: Color
     @Composable get() = MaterialTheme.colorScheme.secondaryContainer
-private val MirzaAddPillText = Color(0xFF5392F7)
+private val MirzaAddPillText: Color
+    @Composable get() = MaterialTheme.colorScheme.secondary
 
 @Composable
 fun BanksScreen(
@@ -192,20 +195,24 @@ private fun RegisteredBanksMainScreen(
         // Top Header: Title "بانک‌های تعریف شده" + active counter pill on the right, and "+ افزودن بانک" pill button on the left
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(
+                modifier = Modifier.weight(1f),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
                     text = "بانک‌های تعریف شده",
                     style = MaterialTheme.typography.titleLarge.copy(
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 21.sp
+                        fontSize = 20.sp
                     ),
-                    color = Color.White
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
                 AnimatedVisibility(
                     visible = settings.registeredBankCards.isNotEmpty(),
@@ -223,6 +230,8 @@ private fun RegisteredBanksMainScreen(
                                 fontWeight = FontWeight.ExtraBold
                             ),
                             color = MirzaGreen,
+                            maxLines = 1,
+                            softWrap = false,
                             modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
                         )
                     }
@@ -234,12 +243,13 @@ private fun RegisteredBanksMainScreen(
                 color = MirzaAddPillBg,
                 border = BorderStroke(1.dp, MirzaAddPillText.copy(alpha = 0.25f)),
                 modifier = Modifier
+                    .defaultMinSize(minHeight = 48.dp)
                     .clip(RoundedCornerShape(14.dp))
                     .clickable(onClick = onOpenAddBank)
                     .testTag("add_bank_button")
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
@@ -255,7 +265,9 @@ private fun RegisteredBanksMainScreen(
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp
                         ),
-                        color = MirzaAddPillText
+                        color = MirzaAddPillText,
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }
@@ -292,7 +304,7 @@ private fun RegisteredBanksMainScreen(
                     Text(
                         text = "هنوز بانکی تعریف نشده است",
                         style = MaterialTheme.typography.titleMedium,
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
@@ -394,7 +406,7 @@ private fun RegisteredBanksMainScreen(
                             Text(
                                 text = "آزمایشگاه پارسر و تشخیص خودکار (${SmsParser.KNOWN_BANKS.size} بانک)",
                                 style = MaterialTheme.typography.labelLarge,
-                                color = Color.White,
+                                color = MaterialTheme.colorScheme.onSurface,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
@@ -430,7 +442,7 @@ private fun RegisteredBanksMainScreen(
                             Text(
                                 text = "فیلتر محدودکننده بانک‌ها",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color.White
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                             Switch(
                                 checked = settings.filterBanksEnabled,
@@ -534,7 +546,7 @@ private fun AddNewBankScreen(
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 23.sp
                 ),
-                color = Color.White
+                color = MaterialTheme.colorScheme.onSurface
             )
             Text(
                 text = "بانک و سرشماره پیامک آن را انتخاب کنید",
@@ -594,7 +606,7 @@ private fun AddNewBankScreen(
                         singleLine = true,
                         cursorBrush = SolidColor(MirzaGreen),
                         textStyle = TextStyle(
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onSurface,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Medium
                         ),
@@ -667,7 +679,7 @@ private fun AddNewBankScreen(
                                     fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
                                     fontSize = 12.sp
                                 ),
-                                color = if (isSelected) MirzaGreen else Color.White,
+                                color = if (isSelected) MirzaGreen else MaterialTheme.colorScheme.onSurface,
                                 textAlign = TextAlign.Center,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
@@ -729,7 +741,7 @@ private fun AddNewBankScreen(
                         singleLine = true,
                         cursorBrush = SolidColor(MirzaGreen),
                         textStyle = TextStyle(
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onSurface,
                             fontSize = 16.sp,
                             fontWeight = FontWeight.SemiBold,
                             textDirection = TextDirection.Ltr,
@@ -1101,7 +1113,7 @@ private fun ReceivedSendersDialog(
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 19.sp
                                 ),
-                                color = Color.White
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
                                 text = "${filteredSenders.size} سرشماره از ${senders.size} مورد • اولویت با سرشماره‌های بانکی",
@@ -1160,7 +1172,7 @@ private fun ReceivedSendersDialog(
                                 singleLine = true,
                                 cursorBrush = SolidColor(MirzaGreen),
                                 textStyle = TextStyle(
-                                    color = Color.White,
+                                    color = MaterialTheme.colorScheme.onSurface,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.SemiBold
                                 ),
@@ -1170,22 +1182,27 @@ private fun ReceivedSendersDialog(
                             )
                         }
                         if (searchQuery.isNotEmpty()) {
-                            Surface(
-                                shape = CircleShape,
-                                color = Color(0xFF252F42),
+                            Box(
+                                contentAlignment = Alignment.Center,
                                 modifier = Modifier
-                                    .size(24.dp)
+                                    .size(48.dp)
                                     .clip(CircleShape)
                                     .clickable { searchQuery = "" }
                                     .testTag("received_senders_clear_search_button")
                             ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Default.Clear,
-                                        contentDescription = "پاک کردن جستجو",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(14.dp)
-                                    )
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Color(0xFF252F42),
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Default.Clear,
+                                            contentDescription = "پاک کردن جستجو",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1272,7 +1289,7 @@ private fun ReceivedSendersDialog(
                                 style = MaterialTheme.typography.titleMedium.copy(
                                     fontWeight = FontWeight.Bold
                                 ),
-                                color = Color.White,
+                                color = MaterialTheme.colorScheme.onSurface,
                                 textAlign = TextAlign.Center
                             )
                             Text(
@@ -1411,7 +1428,11 @@ private fun ReceivedSendersDialog(
                                                     textDirection = TextDirection.Ltr,
                                                     textAlign = TextAlign.Right
                                                 ),
-                                                color = if (isAlreadyRegistered) Color.White.copy(alpha = 0.55f) else Color.White,
+                                                color = if (isAlreadyRegistered) {
+                                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurface
+                                                },
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                                 modifier = Modifier.fillMaxWidth()

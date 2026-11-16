@@ -27,6 +27,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,6 +53,7 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -102,6 +105,14 @@ import com.example.ui.theme.AsisNavyDark
 import com.example.ui.theme.AsisOledBlack
 import com.example.ui.theme.AsisOledCard
 
+private enum class SettingsCategory(val labelFa: String) {
+    ALL("همه"),
+    SERVER("سرور و اتصال"),
+    MATCHING("تطبیق و فیلتر"),
+    ALERTS("اعلان و لرزش"),
+    APPEARANCE("ظاهر و حافظه")
+}
+
 @Composable
 fun SettingsScreen(
     settings: GatewaySettings,
@@ -149,6 +160,7 @@ fun SettingsScreen(
         mutableStateOf(if (settings.localMaxToman > 0L) settings.localMaxToman.toString() else "")
     }
     var showToken by rememberSaveable { mutableStateOf(false) }
+    var selectedCategory by rememberSaveable { mutableStateOf(SettingsCategory.ALL) }
 
     LaunchedEffect(settings.endpointUrl, settings.gatewayToken, settings.localMaxToman) {
         if (endpointInput.isEmpty() && settings.endpointUrl.isNotEmpty()) {
@@ -225,449 +237,482 @@ fun SettingsScreen(
             }
         }
 
-        // Theme & AMOLED Battery-Saver Mode Card
-        ThemeAppearanceCard(
-            currentMode = settings.themeMode,
-            onSelectMode = onSelectThemeMode
-        )
-
-        // App-Side Approval Controls Card
-        AsisElevatedCard {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                androidx.compose.foundation.layout.Box(modifier = Modifier.weight(1f)) {
-                    SectionHeader(
-                        icon = Icons.Default.VerifiedUser,
-                        title = "تأیید خودکار در اپ",
-                        subtitle = if (settings.autoApproveInApp) {
-                            "روشن: پس از تطبیق دقیق مبلغ، فرمان تأیید امضاشده ارسال می‌شود"
-                        } else {
-                            "خاموش: پیامک تطبیق می‌خورد و برای تأیید دستی اعلان ارسال می‌شود"
-                        }
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Switch(
-                    checked = settings.autoApproveInApp,
-                    onCheckedChange = onToggleAutoApproveInApp,
-                    modifier = Modifier.testTag("auto_approve_switch")
+        // Category Filter Strip for fast navigation across grouped settings
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(SettingsCategory.entries) { category ->
+                FilterChip(
+                    selected = selectedCategory == category,
+                    onClick = { selectedCategory = category },
+                    label = {
+                        Text(
+                            text = category.labelFa,
+                            fontWeight = if (selectedCategory == category) FontWeight.Bold else FontWeight.Medium
+                        )
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.testTag("settings_category_${category.name.lowercase()}")
                 )
             }
-
-            OutlinedTextField(
-                value = localMaxTomanInput,
-                onValueChange = { localMaxTomanInput = it.filter { ch -> ch.isDigit() } },
-                label = { Text("سقف تومانی تأیید خودکار محلی (اختیاری)") },
-                placeholder = {
-                    Text(
-                        if (settings.lastServerMaxToman > 0) {
-                            "خالی = سقف سرور (${SmsParser.formatRial(settings.lastServerMaxToman)} تومان)"
-                        } else {
-                            "خالی = استفاده از auto_max_toman سرور"
-                        }
-                    )
-                },
-                supportingText = {
-                    val formattedNote = if (localMaxPreview != null && localMaxPreview > 0L) {
-                        "سقف محلی فعلی: ${SmsParser.formatRial(localMaxPreview)} تومان (مبالغ بالاتر به MANUAL می‌روند)"
-                    } else {
-                        "واریزهای بالاتر از این سقف خودکار تأیید نمی‌شوند و به حالت MANUAL می‌روند."
-                    }
-                    Text(formattedNote)
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("local_max_toman_input")
-            )
         }
 
-        // Real-Time Push Notification Settings Panel
-        NotificationSettingsPanelCard(
-            settings = settings,
-            hasNotificationPermission = hasNotificationPermission,
-            onRequestNotificationPermission = onRequestNotificationPermission,
-            onToggleNotifyServerError = onToggleNotifyServerError,
-            onToggleNotifySensitiveSms = onToggleNotifySensitiveSms,
-            onToggleNotifyAmbiguousManual = onToggleNotifyAmbiguousManual,
-            onToggleNotifyApprovedInvoice = onToggleNotifyApprovedInvoice,
-            onUpdateSensitiveSmsMinToman = onUpdateSensitiveSmsMinToman,
-            onSendTestNotification = onSendTestNotification
-        )
+        val showServer = selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.SERVER
+        val showMatching = selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.MATCHING
+        val showAlerts = selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.ALERTS
+        val showAppearance = selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.APPEARANCE
 
-        // Granular Haptic Feedback Customization Menu
-        HapticSettingsCard(
-            settings = settings,
-            onToggleMaster = onToggleHapticMaster,
-            onToggleHandshake = onToggleHapticHandshake,
-            onSelectHandshakePattern = onSelectHapticHandshakePattern,
-            onSelectHandshakeIntensity = onSelectHapticHandshakeIntensity,
-            onTestHandshake = onTestHandshakeHaptic,
-            onToggleFailedSync = onToggleHapticFailedSync,
-            onSelectFailedSyncPattern = onSelectHapticFailedSyncPattern,
-            onSelectFailedSyncIntensity = onSelectHapticFailedSyncIntensity,
-            onTestFailedSync = onTestFailedSyncHaptic,
-            onToggleCooldown = onToggleHapticCooldown
-        )
-
-        // Local Storage Optimization: Automatic 15-Day Log Cleanup
-        StorageOptimizationCard(
-            settings = settings,
-            totalLogsCount = totalLogsCount,
-            oldLogs15DaysCount = oldLogs15DaysCount,
-            onToggleAutoClearOldLogs = onToggleAutoClearOldLogs,
-            onClearOldLogsNow = onClearOldLogsNow
-        )
-
-        // Custom SMS Filtering Rules Card (reduces unnecessary server load)
-        CustomFilterRulesCard(
-            settings = settings,
-            onToggleMasterEnabled = onToggleCustomFiltersEnabled,
-            onAddRule = onAddCustomFilterRule,
-            onToggleRule = onToggleCustomFilterRule,
-            onRemoveRule = onRemoveCustomFilterRule
-        )
-
-        // Endpoint & Token Configuration Card
-        AsisElevatedCard {
-            SectionHeader(
-                icon = Icons.Default.Shield,
-                title = "اتصال و اعتبارسنجی درگاه",
-                subtitle = "ذخیره‌سازی امن با رمزنگاری AES-256 (EncryptedSharedPreferences)",
-                trailing = {
-                    StatusPill(
-                        label = if (isHttpsValid && isTokenValid) "پیکربندی کامل" else "ناقص",
-                        color = if (isHttpsValid && isTokenValid) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.tertiary
-                        }
-                    )
-                }
-            )
-
-            OutlinedTextField(
-                value = endpointInput,
-                onValueChange = {
-                    endpointInput = it
-                    onResetTestState()
-                },
-                label = { Text("آدرس مسیر پنل سرور (HTTPS)") },
-                placeholder = { Text("https://domain.com/panel-path") },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.Link,
-                        contentDescription = "آدرس سرور"
-                    )
-                },
-                isError = isHttpInsecure,
-                shape = RoundedCornerShape(14.dp),
-                supportingText = {
-                    when {
-                        isHttpInsecure -> Text(
-                            text = "پروتکل http:// مجاز نیست! حتماً از https:// استفاده کنید.",
-                            color = MaterialTheme.colorScheme.error
-                        )
-                        basePanelPreview.isNotEmpty() -> Text(
-                            text = "مسیرها: /sms-pending • /sms-approve • /sms-in",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                fontFamily = FontFamily.Monospace,
-                                textDirection = TextDirection.Ltr
-                            )
-                        )
-                        else -> Text("آدرس پایهٔ پنل یا آدرس کامل /sms-in را وارد کنید.")
-                    }
-                },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("endpoint_url_input")
-            )
-
-            AnimatedVisibility(
-                visible = basePanelPreview.isNotEmpty() && isHttpsValid,
-                enter = fadeIn(tween(220)) +
-                    expandVertically(animationSpec = AsisMotion.smoothSpring()) +
-                    scaleIn(initialScale = 0.96f, animationSpec = AsisMotion.bouncySpring()),
-                exit = fadeOut(tween(150)) +
-                    shrinkVertically(animationSpec = AsisMotion.smoothSpring()) +
-                    scaleOut(targetScale = 0.96f, animationSpec = tween(150))
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text(
-                            text = "GET  $basePanelPreview/sms-pending",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontFamily = FontFamily.Monospace,
-                                textDirection = TextDirection.Ltr
-                            ),
-                            color = MaterialTheme.colorScheme.secondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "POST $basePanelPreview/sms-approve",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontFamily = FontFamily.Monospace,
-                                textDirection = TextDirection.Ltr
-                            ),
-                            color = MaterialTheme.colorScheme.primary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+        // 1. SERVER & CONNECTION (Top Priority)
+        if (showServer) {
+            AsisElevatedCard {
+                SectionHeader(
+                    icon = Icons.Default.Shield,
+                    title = "اتصال و اعتبارسنجی درگاه",
+                    subtitle = "ذخیره‌سازی امن با رمزنگاری AES-256 (EncryptedSharedPreferences)",
+                    trailing = {
+                        StatusPill(
+                            label = if (isHttpsValid && isTokenValid) "پیکربندی کامل" else "ناقص",
+                            color = if (isHttpsValid && isTokenValid) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.tertiary
+                            }
                         )
                     }
-                }
-            }
-
-            OutlinedTextField(
-                value = tokenInput,
-                onValueChange = {
-                    tokenInput = it
-                    onResetTestState()
-                },
-                label = { Text("توکن درگاه پیامک (SMS_GATEWAY_TOKEN)") },
-                placeholder = { Text("حداقل ۲۰ کاراکتر") },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.Key,
-                        contentDescription = "توکن"
-                    )
-                },
-                trailingIcon = {
-                    IconButton(
-                        onClick = { showToken = !showToken },
-                        modifier = Modifier.testTag("toggle_token_visibility_button")
-                    ) {
-                        Icon(
-                            imageVector = if (showToken) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                            contentDescription = if (showToken) "مخفی کردن توکن" else "نمایش توکن"
-                        )
-                    }
-                },
-                visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
-                isError = tokenInput.isNotEmpty() && !isTokenValid,
-                shape = RoundedCornerShape(14.dp),
-                supportingText = {
-                    Text(
-                        text = "طول فعلی: $tokenLen کاراکتر (حداقل مجاز: ۲۰ کاراکتر — کلید امضای HMAC-SHA256)",
-                        color = if (tokenInput.isNotEmpty() && !isTokenValid) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
-                },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("gateway_token_input")
-            )
-
-            Button(
-                onClick = { onSaveSettings(endpointInput, tokenInput, localMaxTomanInput) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
-                    .testTag("save_settings_button"),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Save,
-                    contentDescription = "ذخیره تنظیمات",
-                    modifier = Modifier.size(18.dp)
                 )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("ذخیره در حافظهٔ رمزنگاری‌شده", fontWeight = FontWeight.Bold)
-            }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                FilledTonalButton(
-                    onClick = { onTestConnection(endpointInput, tokenInput) },
-                    enabled = testConnectionState !is TestConnectionUiState.Loading,
+                OutlinedTextField(
+                    value = endpointInput,
+                    onValueChange = {
+                        endpointInput = it
+                        onResetTestState()
+                    },
+                    label = { Text("آدرس مسیر پنل سرور (HTTPS)") },
+                    placeholder = { Text("https://domain.com/panel-path") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Link,
+                            contentDescription = "آدرس سرور"
+                        )
+                    },
+                    isError = isHttpInsecure,
+                    shape = RoundedCornerShape(14.dp),
+                    supportingText = {
+                        when {
+                            isHttpInsecure -> Text(
+                                text = "پروتکل http:// مجاز نیست! حتماً از https:// استفاده کنید.",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            basePanelPreview.isNotEmpty() -> Text(
+                                text = "مسیرها: /sms-pending • /sms-approve • /sms-in",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    textDirection = TextDirection.Ltr
+                                )
+                            )
+                            else -> Text("آدرس پایهٔ پنل یا آدرس کامل /sms-in را وارد کنید.")
+                        }
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .testTag("test_connection_button"),
+                        .fillMaxWidth()
+                        .testTag("endpoint_url_input")
+                )
+
+                AnimatedVisibility(
+                    visible = basePanelPreview.isNotEmpty() && isHttpsValid,
+                    enter = fadeIn(tween(220)) +
+                        expandVertically(animationSpec = AsisMotion.smoothSpring()) +
+                        scaleIn(initialScale = 0.96f, animationSpec = AsisMotion.bouncySpring()),
+                    exit = fadeOut(tween(150)) +
+                        shrinkVertically(animationSpec = AsisMotion.smoothSpring()) +
+                        scaleOut(targetScale = 0.96f, animationSpec = tween(150))
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "GET  $basePanelPreview/sms-pending",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    textDirection = TextDirection.Ltr
+                                ),
+                                color = MaterialTheme.colorScheme.secondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "POST $basePanelPreview/sms-approve",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    textDirection = TextDirection.Ltr
+                                ),
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = tokenInput,
+                    onValueChange = {
+                        tokenInput = it
+                        onResetTestState()
+                    },
+                    label = { Text("توکن درگاه پیامک (SMS_GATEWAY_TOKEN)") },
+                    placeholder = { Text("حداقل ۲۰ کاراکتر") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Key,
+                            contentDescription = "توکن"
+                        )
+                    },
+                    trailingIcon = {
+                        IconButton(
+                            onClick = { showToken = !showToken },
+                            modifier = Modifier.testTag("toggle_token_visibility_button")
+                        ) {
+                            Icon(
+                                imageVector = if (showToken) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (showToken) "مخفی کردن توکن" else "نمایش توکن"
+                            )
+                        }
+                    },
+                    visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
+                    isError = tokenInput.isNotEmpty() && !isTokenValid,
+                    shape = RoundedCornerShape(14.dp),
+                    supportingText = {
+                        Text(
+                            text = "طول فعلی: $tokenLen کاراکتر (حداقل مجاز: ۲۰ کاراکتر — کلید امضای HMAC-SHA256)",
+                            color = if (tokenInput.isNotEmpty() && !isTokenValid) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("gateway_token_input")
+                )
+
+                Button(
+                    onClick = { onSaveSettings(endpointInput, tokenInput, localMaxTomanInput) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .testTag("save_settings_button"),
                     shape = RoundedCornerShape(14.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.NetworkCheck,
-                        contentDescription = "تست اتصال sms-in",
+                        imageVector = Icons.Default.Save,
+                        contentDescription = "ذخیره تنظیمات",
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("تست sms-in", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("ذخیره در حافظهٔ رمزنگاری‌شده", fontWeight = FontWeight.Bold)
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = { onTestConnection(endpointInput, tokenInput) },
+                        enabled = testConnectionState !is TestConnectionUiState.Loading,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("test_connection_button"),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.NetworkCheck,
+                            contentDescription = "تست اتصال sms-in",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("تست sms-in", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+
+                    OutlinedButton(
+                        onClick = { onTestPendingEndpoint(endpointInput, tokenInput) },
+                        enabled = testConnectionState !is TestConnectionUiState.Loading,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("test_pending_button"),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Sync,
+                            contentDescription = "تست sms-pending",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("تست pending", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = "همگام‌سازی خودکار اتصال بعد از خطاها",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "به‌محض بازگشت اینترنت، رفع خطای سرور یا اصلاح توکن، صف خطاها بدون انتظار صف Backoff ارسال می‌شوند.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Switch(
+                        checked = settings.autoSyncAfterErrors,
+                        onCheckedChange = onToggleAutoSyncAfterErrors,
+                        modifier = Modifier.testTag("auto_sync_after_errors_switch")
+                    )
+                }
+
+                if (settings.lastErrorRecoverySyncAtMs != null && settings.lastErrorRecoverySyncedCount > 0) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "آخرین بازیابی پس از خطا: ${settings.lastErrorRecoverySyncedCount} پیامک با موفقیت همگام‌سازی شد",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
                 }
 
                 OutlinedButton(
-                    onClick = { onTestPendingEndpoint(endpointInput, tokenInput) },
-                    enabled = testConnectionState !is TestConnectionUiState.Loading,
+                    onClick = onSyncAfterErrorsNow,
+                    enabled = !postErrorSyncState.isSyncing,
                     modifier = Modifier
-                        .weight(1f)
+                        .fillMaxWidth()
                         .height(48.dp)
-                        .testTag("test_pending_button"),
+                        .testTag("sync_after_errors_now_button"),
                     shape = RoundedCornerShape(14.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Sync,
-                        contentDescription = "تست sms-pending",
-                        modifier = Modifier.size(18.dp)
+                    if (postErrorSyncState.isSyncing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Sync,
+                            contentDescription = "همگام‌سازی اتصال بعد از خطاها",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (postErrorSyncState.isSyncing) {
+                            "در حال همگام‌سازی اتصال پس از خطا..."
+                        } else {
+                            "همگام‌سازی اتصال بعد از خطاها"
+                        },
+                        fontWeight = FontWeight.Bold
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("تست pending", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            // Test Result Banner placed right under Server & Connection card
+            AnimatedVisibility(
+                visible = testConnectionState !is TestConnectionUiState.Idle,
+                enter = fadeIn(tween(220)) +
+                    expandVertically(animationSpec = AsisMotion.smoothSpring()) +
+                    scaleIn(initialScale = 0.95f, animationSpec = AsisMotion.bouncySpring()),
+                exit = fadeOut(tween(150)) +
+                    shrinkVertically(animationSpec = AsisMotion.smoothSpring()) +
+                    scaleOut(targetScale = 0.95f, animationSpec = tween(150))
             ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                TestConnectionResultBanner(testConnectionState = testConnectionState)
+            }
+        }
+
+        // 2. MATCHING & CUSTOM SMS FILTERS
+        if (showMatching) {
+            AsisElevatedCard {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "همگام‌سازی خودکار اتصال بعد از خطاها",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                    Box(modifier = Modifier.weight(1f)) {
+                        SectionHeader(
+                            icon = Icons.Default.VerifiedUser,
+                            title = "تأیید خودکار در اپ",
+                            subtitle = if (settings.autoApproveInApp) {
+                                "روشن: پس از تطبیق دقیق مبلغ، فرمان تأیید امضاشده ارسال می‌شود"
+                            } else {
+                                "خاموش: پیامک تطبیق می‌خورد و برای تأیید دستی اعلان ارسال می‌شود"
+                            }
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Switch(
+                        checked = settings.autoApproveInApp,
+                        onCheckedChange = onToggleAutoApproveInApp,
+                        modifier = Modifier.testTag("auto_approve_switch")
+                    )
+                }
+
+                OutlinedTextField(
+                    value = localMaxTomanInput,
+                    onValueChange = { localMaxTomanInput = it.filter { ch -> ch.isDigit() } },
+                    label = { Text("سقف تومانی تأیید خودکار محلی (اختیاری)") },
+                    placeholder = {
+                        Text(
+                            if (settings.lastServerMaxToman > 0) {
+                                "خالی = سقف سرور (${SmsParser.formatRial(settings.lastServerMaxToman)} تومان)"
+                            } else {
+                                "خالی = استفاده از auto_max_toman سرور"
+                            }
+                        )
+                    },
+                    supportingText = {
+                        val formattedNote = if (localMaxPreview != null && localMaxPreview > 0L) {
+                            "سقف محلی فعلی: ${SmsParser.formatRial(localMaxPreview)} تومان (مبالغ بالاتر به MANUAL می‌روند)"
+                        } else {
+                            "واریزهای بالاتر از این سقف خودکار تأیید نمی‌شوند و به حالت MANUAL می‌روند."
+                        }
+                        Text(formattedNote)
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("local_max_toman_input")
+                )
+            }
+
+            CustomFilterRulesCard(
+                settings = settings,
+                onToggleMasterEnabled = onToggleCustomFiltersEnabled,
+                onAddRule = onAddCustomFilterRule,
+                onToggleRule = onToggleCustomFilterRule,
+                onRemoveRule = onRemoveCustomFilterRule
+            )
+        }
+
+        // 3. ALERTS & HAPTIC FEEDBACK
+        if (showAlerts) {
+            NotificationSettingsPanelCard(
+                settings = settings,
+                hasNotificationPermission = hasNotificationPermission,
+                onRequestNotificationPermission = onRequestNotificationPermission,
+                onToggleNotifyServerError = onToggleNotifyServerError,
+                onToggleNotifySensitiveSms = onToggleNotifySensitiveSms,
+                onToggleNotifyAmbiguousManual = onToggleNotifyAmbiguousManual,
+                onToggleNotifyApprovedInvoice = onToggleNotifyApprovedInvoice,
+                onUpdateSensitiveSmsMinToman = onUpdateSensitiveSmsMinToman,
+                onSendTestNotification = onSendTestNotification
+            )
+
+            HapticSettingsCard(
+                settings = settings,
+                onToggleMaster = onToggleHapticMaster,
+                onToggleHandshake = onToggleHapticHandshake,
+                onSelectHandshakePattern = onSelectHapticHandshakePattern,
+                onSelectHandshakeIntensity = onSelectHapticHandshakeIntensity,
+                onTestHandshake = onTestHandshakeHaptic,
+                onToggleFailedSync = onToggleHapticFailedSync,
+                onSelectFailedSyncPattern = onSelectHapticFailedSyncPattern,
+                onSelectFailedSyncIntensity = onSelectHapticFailedSyncIntensity,
+                onTestFailedSync = onTestFailedSyncHaptic,
+                onToggleCooldown = onToggleHapticCooldown
+            )
+        }
+
+        // 4. APPEARANCE & STORAGE OPTIMIZATION
+        if (showAppearance) {
+            ThemeAppearanceCard(
+                currentMode = settings.themeMode,
+                onSelectMode = onSelectThemeMode
+            )
+
+            StorageOptimizationCard(
+                settings = settings,
+                totalLogsCount = totalLogsCount,
+                oldLogs15DaysCount = oldLogs15DaysCount,
+                onToggleAutoClearOldLogs = onToggleAutoClearOldLogs,
+                onClearOldLogsNow = onClearOldLogsNow
+            )
+        }
+
+        if (showServer) {
+            // Security Notice Banner
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = "ذخیره‌سازی رمزنگاری‌شده",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(22.dp)
                     )
                     Text(
-                        text = "به‌محض بازگشت اینترنت، رفع خطای سرور یا اصلاح توکن، صف خطاها بدون انتظار صف Backoff ارسال می‌شوند.",
+                        text = "امضای درخواست‌های تأیید: HMAC-SHA256(token, kind|public_id|fingerprint|amount_minor|ts). توکن صرفاً از طریق هدر امن X-Token و TLS ارسال می‌شود و در EncryptedSharedPreferences نگهداری می‌گردد.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                Switch(
-                    checked = settings.autoSyncAfterErrors,
-                    onCheckedChange = onToggleAutoSyncAfterErrors,
-                    modifier = Modifier.testTag("auto_sync_after_errors_switch")
-                )
-            }
-
-            if (settings.lastErrorRecoverySyncAtMs != null && settings.lastErrorRecoverySyncedCount > 0) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = "آخرین بازیابی پس از خطا: ${settings.lastErrorRecoverySyncedCount} پیامک با موفقیت همگام‌سازی شد",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
-            }
-
-            OutlinedButton(
-                onClick = onSyncAfterErrorsNow,
-                enabled = !postErrorSyncState.isSyncing,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("sync_after_errors_now_button"),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                if (postErrorSyncState.isSyncing) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.Sync,
-                        contentDescription = "همگام‌سازی اتصال بعد از خطاها",
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = if (postErrorSyncState.isSyncing) {
-                        "در حال همگام‌سازی اتصال پس از خطا..."
-                    } else {
-                        "همگام‌سازی اتصال بعد از خطاها"
-                    },
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-
-        // Test Result Banner
-        AnimatedVisibility(
-            visible = testConnectionState !is TestConnectionUiState.Idle,
-            enter = fadeIn(tween(220)) +
-                expandVertically(animationSpec = AsisMotion.smoothSpring()) +
-                scaleIn(initialScale = 0.95f, animationSpec = AsisMotion.bouncySpring()),
-            exit = fadeOut(tween(150)) +
-                shrinkVertically(animationSpec = AsisMotion.smoothSpring()) +
-                scaleOut(targetScale = 0.95f, animationSpec = tween(150))
-        ) {
-            TestConnectionResultBanner(testConnectionState = testConnectionState)
-        }
-
-        // Security Notice Banner
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            shape = RoundedCornerShape(16.dp),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Lock,
-                    contentDescription = "ذخیره‌سازی رمزنگاری‌شده",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(22.dp)
-                )
-                Text(
-                    text = "امضای درخواست‌های تأیید: HMAC-SHA256(token, kind|public_id|fingerprint|amount_minor|ts). توکن صرفاً از طریق هدر امن X-Token و TLS ارسال می‌شود و در EncryptedSharedPreferences نگهداری می‌گردد.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
         }
 

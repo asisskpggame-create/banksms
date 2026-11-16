@@ -353,11 +353,9 @@ fun LogsScreen(
         val showHealthChart = selectedFilter == LogFilter.ALL ||
             selectedFilter == LogFilter.FAILED_ERRORS ||
             selectedFilter == LogFilter.NEW_RETRY
-        val hasApprovedInvoices = remember(invoices) {
-            invoices.any { it.status == "MATCHED" }
-        }
         val showApprovedLedger = searchQuery.isBlank() &&
-            (selectedFilter == LogFilter.MATCHED || (selectedFilter == LogFilter.ALL && hasApprovedInvoices))
+            selectedFilter == LogFilter.MATCHED &&
+            invoices.any { it.status == "MATCHED" }
 
         AnimatedContent(
             targetState = filteredLogs.isEmpty(),

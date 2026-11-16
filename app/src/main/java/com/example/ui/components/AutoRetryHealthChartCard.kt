@@ -31,11 +31,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.TrendingDown
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.TrendingDown
-import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -85,7 +85,7 @@ fun AutoRetryHealthChartCard(
     summary: RetryHealthSummary,
     modifier: Modifier = Modifier
 ) {
-    var expanded by rememberSaveable { mutableStateOf(true) }
+    var expanded by rememberSaveable { mutableStateOf(false) }
     val defaultSelectedIdx = remember(summary.days) {
         summary.days.indexOfLast { it.totalAttempts > 0 }.takeIf { it >= 0 } ?: 6
     }
@@ -229,7 +229,11 @@ fun AutoRetryHealthChartCard(
                                 horizontalArrangement = Arrangement.spacedBy(2.dp)
                             ) {
                                 Icon(
-                                    imageVector = if (improving) Icons.Default.TrendingUp else Icons.Default.TrendingDown,
+                                    imageVector = if (improving) {
+                                        Icons.AutoMirrored.Filled.TrendingUp
+                                    } else {
+                                        Icons.AutoMirrored.Filled.TrendingDown
+                                    },
                                     contentDescription = null,
                                     tint = trendColor,
                                     modifier = Modifier.size(16.dp)
@@ -444,7 +448,7 @@ fun AutoRetryHealthChartCard(
                                         modifier = Modifier
                                             .weight(1f)
                                             .clickable { selectedDayIndex = idx }
-                                            .padding(vertical = 4.dp)
+                                            .padding(vertical = 10.dp)
                                             .testTag("retry_chart_day_chip_$idx")
                                     )
                                 }
